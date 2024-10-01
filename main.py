@@ -243,7 +243,7 @@ async def ban(ctx, to_ban : discord.Member, reason : str | None = None):
 @commands.has_permissions(administrator=True)
 async def unban(ctx, to_unban : str | None = None):
     if not to_unban:
-        await ctx.send("Nigga who to unban")
+        await ctx.send("who to unban")
         return 
     member =  await bot.fetch_user(to_unban)
     async def send_msg():
@@ -322,7 +322,7 @@ async def touch(ctx, user : discord.Member | None = None):
 @bot.command(aliases=["kms","suicide","killme","endme","die","murder","uicide"])
 async def kickme(ctx):
     start = time.time()
-    inv = "https://discord.gg/k2j9tCApGX"
+    inv = os.environ.get("INVITE")
     await ctx.author.send(f"yoo why you leave the party?? come back!\n{inv}")
     async def he_left():
         embed = discord.Embed(description=f"{ctx.author.mention} killed themselves", color=0x00ff00)
