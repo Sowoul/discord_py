@@ -1,4 +1,5 @@
 import asyncio
+
 import os
 import random
 import re
@@ -11,19 +12,83 @@ import yt_dlp
 from aiohttp import ClientError
 from discord.ext import commands
 from discord.utils import get
-
-intents = discord.Intents.all()
-bot = commands.Bot(command_prefix = "$", intents=intents)
 from urllib.request import Request, urlopen
-import os 
+import os
 from dotenv import load_dotenv
+
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker , relationship, Query
+
+os.remove('db.sqlite3')
+
+Base = declarative_base()
+
+class UserRole(Base):
+    __tablename__ = "userrole"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("user.id"))
+    role_id = Column(Integer, ForeignKey("role.id"))
+    user = relationship("User", back_populates="roles")
+    role = relationship("Role", back_populates="users")
+
+class User(Base):
+    __tablename__ = "user"
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    avatar = Column(String)
+    roles = relationship("UserRole", back_populates="user")
+
+class Role(Base):
+    __tablename__ = "role"
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    users = relationship("UserRole", back_populates="role")
+
+engine = create_engine("sqlite:///db.sqlite3")
+Base.metadata.create_all(engine)
+Session = sessionmaker(bind=engine)
+session = Session()
+
+class Diddler(commands.Bot):
+    def __init__(self,**kwargs) -> None:
+        super().__init__(intents=discord.Intents.all(), command_prefix=kwargs.get('command_prefix', "$"))
+        self.changelogs = deque(maxlen=50)
+        self.logs = deque(maxlen=50)
+        self.song_queue = deque(maxlen=20)
+        self.muted_role : discord.Role | None = None
+        self.words = []
+        self.wordle = {}
+
+    def deleted(self, message : discord.Message):
+        embed = discord.Embed(description=f"**Message**: {message.content}", color=0x00ff00)
+        embed.set_author(name=f"{message.author}", icon_url=message.author.avatar.url if message.author.avatar else None)
+        embed.set_footer(text=f"Deleted in #{message.channel}")
+        self.logs.append(embed)
+
+    def edited_message(self, before : discord.Message, after: discord.Message):
+        embed = discord.Embed(description=f"**Before**: {before.content}\n **After**: {after.content}", color=0x00ff00)
+        embed.set_author(name=f"{before.author}", icon_url=before.author.avatar.url if before.author.avatar else None)
+        embed.set_footer(text=f"Edited in #{before.channel}")
+        self.changelogs.append(embed)
+
+    def snipe(self, num):
+        if len(self.logs)<num:
+            raise ValueError("Not enough messages to snipe")
+        return self.logs[-num]
+    def esnipe(self,num):
+        if len(self.changelogs)<num:
+            raise ValueError("Not enough messages to esnipe")
+        return self.changelogs[-num]
+
+bot = Diddler(command_prefix = "$")
+
 
 load_dotenv()
 intents = discord.Intents.all()
-bot = commands.Bot(command_prefix = "$", intents=intents)
 channels = {
     "general": 1288765788051738687,
-    "member_info_vc": 1289161212487143444 
+    "member_info_vc": 1289161212487143444
 }
 
 async def update_member_count(guild):
@@ -34,6 +99,13 @@ async def periodic_member_count_update(guild):
     while True:
         await update_member_count(guild)
         await asyncio.sleep(3000)
+
+async def load_words():
+    with open('words.txt' , 'r') as file:
+        bot.words = file.read().split('\n')[:-1]
+        print(f"{len(bot.words)} words loaded")
+
+
 
 async def scrape_movie_info(movie, max_retries=5, delay=2):
     url = f'https://www.theflixertv.to/search/{movie}'
@@ -53,9 +125,9 @@ async def scrape_movie_info(movie, max_retries=5, delay=2):
                 async with session.get(url, headers=headers, timeout=10) as response:
                     if response.status == 200:
                         f = await response.text()
-                        
+
                         pattern = r'<img data-src="(https://[^"]+)"[^>]*class="film-poster-img[^>]*>.*?<a href="([^"]+)"[^>]*class="film-poster-ahref".*?<h2 class="film-name"><a[^>]*>([^<]+)</a>'
-                        
+
                         matches = re.findall(pattern, f, re.DOTALL)
 
                         results = []
@@ -65,7 +137,7 @@ async def scrape_movie_info(movie, max_retries=5, delay=2):
                                 'movie_url': f"https://www.theflixertv.to{movie_url}",
                                 'title': title.strip()
                             })
-                        
+
                         return results
                     else:
                         raise ClientError(f"HTTP error {response.status}")
@@ -79,17 +151,43 @@ async def scrape_movie_info(movie, max_retries=5, delay=2):
 @bot.event
 async def on_ready():
     print(f"Bot is ready as {bot.user}")
-    bot.changelogs = deque(maxlen=50)
-    bot.logs = deque(maxlen=50)
-    bot.song_queue = deque(maxlen=20)
     await bot.change_presence(activity=discord.Game(name="Ur mother"))
-    bot.muted_role = get(bot.guilds[0].roles, name="muted") 
+    asyncio.create_task(load_words())
+
+    async def add_muted_role_to_db():
+        for role in bot.guilds[0].roles:
+            role = Role(id = role.id, name=role.name)
+            session.add(role)
+            session.commit()
+
+    async def add_user_to_database(member):
+        user = User(id = member.id,name=member.name, avatar=member.avatar.url if member.avatar else None)
+        session.add(user)
+        session.commit()
+        for role in member.roles:
+            user_role = UserRole(user_id=member.id, role_id=role.id)
+            session.add(user_role)
+            session.commit()
+    for member in bot.guilds[0].members:
+        asyncio.create_task(add_user_to_database(member))
+    bot.muted_role = get(bot.guilds[0].roles, name="muted")
+    asyncio.create_task(add_muted_role_to_db())
     if not bot.muted_role:
         bot.muted_role = await bot.guilds[0].create_role(name="muted")
+        print("Making a new role")
         await asyncio.gather(*(channel.set_permissions(bot.muted_role, speak=False, send_messages=False) for channel in bot.guilds[0].channels))
     print("Muted role is set up.")
     for guild in bot.guilds:
         bot.loop.create_task(periodic_member_count_update(guild))
+
+@bot.event
+async def on_message(message):
+    async def sendmsg():
+        if message.channel.id==1293821426616369232 and not message.content.isdigit():
+            await message.delete()
+    asyncio.create_task(sendmsg())
+    if message.channel.id!=1293821426616369232:
+        await bot.process_commands(message)
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -102,32 +200,74 @@ async def on_command_error(ctx, error):
 async def on_message_edit(before, after):
     if before.author == bot.user:
         return
-    embed = discord.Embed(description=f"**Before**: {before.content}\n **After**: {after.content}", color=0x00ff00)
-    embed.set_author(name=f"{before.author}", icon_url=before.author.avatar.url if before.author.avatar else None)
-    embed.set_footer(text=f"Edited in #{before.channel}")
-    bot.changelogs.append(embed)
+    if before.channel.id == 1293821426616369232 and not after.content.isdigit():
+        await after.delete()
+        return
+    bot.edited_message(before, after)
+
+@bot.event
+async def on_member_update(before, after):
+    async def modify_user():
+        id = before.id
+        existing = session.query(User).filter_by(id=id).first()
+
+        if existing:
+            if before.nick != after.nick:
+                existing.name = after.nick
+
+            before_role_ids = {role.id for role in before.roles}
+            after_role_ids = {role.id for role in after.roles}
+            for role in before.roles:
+                if role.id not in after_role_ids:
+                    user_role = session.query(UserRole).filter_by(user_id=before.id, role_id=role.id).first()
+                    if user_role:
+                        session.delete(user_role)
+
+            for role in after.roles:
+                if role.id not in before_role_ids:
+                    role_in_db = session.query(Role).filter_by(id=role.id).first()
+                    if not role_in_db:
+                        role_in_db = Role(id=role.id, name=role.name)
+                        session.add(role_in_db)
+                        session.commit()
+
+                    user_role = UserRole(user_id=before.id, role_id=role.id)
+                    session.add(user_role)
+            session.commit()
+
+    asyncio.create_task(modify_user())
 
 @bot.event
 async def on_message_delete(message):
     if message.author == bot.user:
         return
-    embed = discord.Embed(description=f"**Message**: {message.content}", color=0x00ff00)
-    embed.set_author(name=f"{message.author}", icon_url=message.author.avatar.url if message.author.avatar else None)
-    embed.set_footer(text=f"Deleted in #{message.channel}")
-    bot.logs.append(embed)
+    bot.deleted(message)
 
 @bot.event
 async def on_member_join(member : discord.Member):
     gen = await member.guild.fetch_channel(channels["general"])
-    async def give_role():
-        role = get(member.guild.roles, name="diddy's victim")
-        await member.add_roles(role)
     async def hello_there():
         embed = discord.Embed(description=f"{member.mention} has joined the server", color=discord.Color.random())
         embed.set_author(name=f"{member}", icon_url=member.avatar.url if member.avatar else None)
         embed.set_footer(text=f"Member count: {member.guild.member_count}")
         await gen.send(embed=embed)
-    asyncio.gather(hello_there() , give_role())
+    async def add_user_to_database():
+        existing = session.query(User).filter_by(id=member.id).first()
+        if existing:
+            roles = [get(bot.guilds[0].roles, id = role.role_id) for role in existing.roles if role.role_id!=1287525272748560496]
+        else:
+            role = get(member.guild.roles, name="diddy's victim")
+            roles = [role]
+            existing = User(id=member.id, name=member.name, avatar=member.avatar.url if member.avatar else None)
+            session.add(existing)
+            session.commit()
+        async def ad_role(role):
+            try:
+                await member.add_roles(role)
+            except Exception as e:
+                print(f"{e} occured in {role}")
+        asyncio.gather(*(ad_role(role) for role in roles))
+    asyncio.gather(hello_there(), add_user_to_database())
 
 
 @bot.event
@@ -156,17 +296,17 @@ async def hello(ctx):
 
 @bot.command(aliases=[])
 async def snipe(ctx, nums = 1):
-    if len(bot.logs) < nums:
-        await ctx.send("Not enough messages to snipe")
+    if nums>len(bot.logs):
+        await ctx.send(embed = discord.Embed(description="Not enough messages to snipe", color = 0x00ff00))
         return
-    await ctx.send(embed=bot.logs[-nums])
+    await ctx.send(embed = bot.snipe(nums))
 
 @bot.command(aliases=["esnipe"])
 async def changelog(ctx, nums = 1):
-    if len(bot.changelogs) < nums:
-        await ctx.send("Not enough messages to snipe")
+    if nums>len(bot.changelogs):
+        await ctx.send(embed = discord.Embed(description="Not enough messages to esnipe", color = 0x00ff01))
         return
-    await ctx.send(embed=bot.changelogs[-nums])
+    await ctx.send(embed = bot.esnipe(nums))
 
 @bot.command()
 async def ping(ctx):
@@ -191,7 +331,7 @@ async def kiss(ctx , to_kiss = None):
     from_kiss = ctx.author
     if not to_kiss:
         to_kiss = await bot.fetch_user(1247271643009777704)
-    embed = discord.Embed(color=0x00ff00, description = f"{from_kiss.mention} ***smooches*** {to_kiss}")                                 
+    embed = discord.Embed(color=0x00ff00, description = f"{from_kiss.mention} ***smooches*** {to_kiss}")
     embed.set_image(url="https://media1.tenor.com/m/o_5RQarGvJ0AAAAC/kiss.gif")
     embed.set_author(name=f"{from_kiss}", icon_url=from_kiss.avatar.url if from_kiss.avatar else None)
     await ctx.send(embed=embed)
@@ -225,6 +365,9 @@ async def unmute(ctx, member: discord.Member):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def kick(ctx, to_kick : discord.Member):
+    if sum(1 for i in to_kick.roles if i.name == ":/") == 1:
+        await ctx.send("no")
+        return
     async def send_msg():
         embed = discord.Embed(description=f"{to_kick.mention} has been kicked by {ctx.author.mention}", color=0x00ff00)
         await ctx.send(embed=embed)
@@ -233,6 +376,9 @@ async def kick(ctx, to_kick : discord.Member):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def ban(ctx, to_ban : discord.Member, reason : str | None = None):
+    if sum(1 for i in to_ban.roles if i.name == ":/") == 1:
+        await ctx.send("no")
+        return
     async def send_msg():
         embed = discord.Embed(description=f"{to_ban.mention} has been banned by {ctx.author.mention}", color=0x00ff00)
         await ctx.send(embed=embed)
@@ -244,7 +390,7 @@ async def ban(ctx, to_ban : discord.Member, reason : str | None = None):
 async def unban(ctx, to_unban : str | None = None):
     if not to_unban:
         await ctx.send("who to unban")
-        return 
+        return
     member =  await bot.fetch_user(to_unban)
     async def send_msg():
         embed = discord.Embed(description=f"{member.mention} has been unbanned by {ctx.author.mention}", color=0x00ff00)
@@ -260,7 +406,7 @@ async def invite(ctx):
 async def poll(ctx, *, question):
     embed = discord.Embed(title="Poll", description=question, color=0x00ff00)
     embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
-    embed.set_footer(text=f"Poll created by {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)    
+    embed.set_footer(text=f"Poll created by {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     poll_message = await ctx.send(embed=embed)
     for emoji in ["👍", "👎", "🤷‍♂️"]:
         await poll_message.add_reaction(emoji)
@@ -287,15 +433,6 @@ async def pp(ctx, user : discord.Member = None):
     ppsize = f"8{"="*random.randint(2,8)}D" if user.id != 909101433083813958 else f"8{'='*random.randint(8,14)}D"
     embed = discord.Embed(description=f"{user.mention} has a {ppsize} pp", color=0x00ff00)
     embed.set_author(name=f"{user}", icon_url=user.avatar.url if user.avatar else None)
-    await ctx.send(embed=embed)
-
-@bot.command()
-async def avatar(ctx, user : discord.Member | None = None):
-    if not user:
-        user = ctx.author
-    embed = discord.Embed(color=0x00ff00)
-    embed.set_author(name=f"{user}", icon_url=user.avatar.url if user.avatar else None)
-    embed.set_image(url=user.avatar.url if user.avatar else None)
     await ctx.send(embed=embed)
 
 @bot.command()
@@ -338,6 +475,7 @@ async def roulette(ctx, user : discord.Member | None = None):
     embed = discord.Embed(color=0x00ff00)
     if random.randint(0,6) == 1:
         embed.description = f"{user.mention} died"
+        embed.set_image(url = "https://images-ext-1.discordapp.net/external/NbnFjJTry-slSIXdkS0APwB-nVTeDz_yr0wdPCwvNBw/https/media.tenor.com/3ni-e-SSFYsAAAPo/outlast-game.mp4")
     else:
         embed.description = f"{user.mention} survived"
     embed.set_author(name=f"{ctx.author}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
@@ -401,7 +539,7 @@ async def join_vc(ctx):
         await ctx.send("You arent in a vc")
         return
     await ctx.author.voice.channel.connect()
-    
+
 @bot.command(aliases=["leave"])
 async def leave_vc(ctx):
     if ctx.voice_client and ctx.voice_client.channel != ctx.author.voice.channel:
@@ -473,7 +611,8 @@ async def play_music(ctx, youtube_url: str):
     source = discord.FFmpegPCMAudio(audio_url)
     if ctx.voice_client.is_playing():
         bot.song_queue.append(youtube_url)
-        await msg.edit(content=f"Added to queue: [{info.get('title', 'Unknown Title')}]({youtube_url})")
+        embed = discord.Embed(description=f"Added to queue: [{info.get('title', 'Unknown Title')}]({youtube_url})", color=0x00ff00)
+        await msg.edit(embed=embed)
     else:
         ctx.voice_client.play(source, after=after_playing)
         embed = discord.Embed(description=f"Now playing: [{info.get('title', 'Unknown Title')}]({youtube_url})", color=0x00ff00)
@@ -556,7 +695,8 @@ async def search_song(ctx, *, song):
         source = discord.FFmpegPCMAudio(audio_url)
         if ctx.voice_client.is_playing():
             bot.song_queue.append(f"ytsearch:{song}")
-            await msg.edit(content=f"Added to queue: [{info.get('title', 'Unknown Title')}]")
+            embed = discord.Embed(description=f"Added to queue: [{info.get('title', 'Unknown Title')}]", color=0x00ff00)
+            await msg.edit(embed=embed)
         else:
             ctx.voice_client.play(source, after=after_playing)
             embed = discord.Embed(description=f"Now playing: [{info.get('title', 'Unknown Title')}]", color=0x00ff00)
@@ -600,11 +740,92 @@ async def purge(ctx : discord.ext.commands.Context, nums=5):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def userpurge(ctx : discord.ext.commands.Context,member : discord.Member, nums=5):
-    start = time.time()
     nums = int(nums)
     nums = min(100,nums)
     before = bot.logs
     await ctx.channel.purge(limit = nums, check=lambda msg: msg.author == member)
     bot.logs = before
+
+@bot.command(aliases=["avatar"])
+async def pfp(ctx, member:discord.Member=None):
+    if not member:
+        member = ctx.author
+    embed = discord.Embed(color=0x00ff00, description = f"{member.mention}'s avatar was searched by {ctx.author.mention}")
+    embed.set_image(url = member.avatar.url)
+    embed.set_author(name=member,icon_url = member.avatar.url)
+    await ctx.send(embed = embed)
+
+@bot.command()
+async def blackjack(ctx):
+    return
+
+class Timer:
+    def __init__(self, ctx, time):
+        self.ctx = ctx
+        self.time = time
+    async def start_timer(self):
+        await self.ctx.send(embed = discord.Embed(description = f"Timer started for {self.time} seconds by {self.ctx.author.mention}", color = 0x00ff00))
+        self.task = asyncio.create_task(self.countdown())
+    async def countdown(self):
+        await asyncio.sleep(self.time)
+        await self.ctx.send(f"{self.ctx.author.mention}", embed = discord.Embed(description = f"Timer ended by {self.ctx.author.mention}", color = 0x00ff00))
+
+@bot.command()
+async def timer(ctx, time):
+    if not time.isdigit():
+        await ctx.send("That aint a number")
+        return
+    timer = Timer(ctx, int(time))
+    await timer.start_timer()
+
+class Wordle():
+    def __init__(self, ctx):
+        self.word = random.choice(bot.words)
+        self.tries = 0
+        self.author = ctx.author
+        self.ctx = ctx
+        self.options  = {
+                'wrong' : "⬛",
+                'right' : "🟩",
+                'unplced': "🟨"
+                }
+        self.message = ""
+        print(self.word)
+
+    async def check(self, word):
+        if len(word)!=5:
+            await self.ctx.send("The word must be 5 letters long")
+            return
+        count =0
+        for idx,val in enumerate(word):
+            if val == self.word[idx]:
+                count+=1
+                self.message+=self.options['right']
+            elif val in self.word:
+                self.message+=self.options['unplced']
+            else:
+                self.message+=self.options['wrong']
+        self.message += f" {word}"
+        self.tries+=1
+        embed = discord.Embed(description = self.message, color=0x00ff00)
+        embed.set_author(name = self.ctx.author, icon_url=self.ctx.author.avatar.url)
+        embed.set_footer(text=f"{6-self.tries} tries remaining")
+        await self.ctx.send(embed = embed)
+        if count == 5:
+            await self.ctx.send(embed = discord.Embed(description = f"damn you can spell {self.author.mention}", color = 0x00ff00))
+            del bot.wordle[self.author]
+        self.message += '\n'
+        if self.tries==6:
+            await self.ctx.send(embed = discord.Embed(description=f"{self.ctx.author.mention} game over\nThe word was {self.word}", color = 0x00ff00))
+            del bot.wordle[self.ctx.author]
+
+@bot.command()
+async def wordle(ctx, word):
+    if ctx.author not in bot.wordle:
+        bot.wordle[ctx.author] = Wordle(ctx)
+    game = bot.wordle[ctx.author]
+    game.ctx = ctx
+    await game.check(word)
+
 
 bot.run(token=os.getenv("TOKEN"))
