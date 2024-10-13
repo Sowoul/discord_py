@@ -59,6 +59,7 @@ class Diddler(commands.Bot):
         self.muted_role : discord.Role | None = None
         self.words = []
         self.wordle = {}
+        self.color_roles = {}
 
     def deleted(self, message : discord.Message):
         embed = discord.Embed(description=f"**Message**: {message.content}", color=0x00ff00)
@@ -119,10 +120,10 @@ async def scrape_movie_info(movie, max_retries=5, delay=2):
         'Upgrade-Insecure-Requests': '1',
     }
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession() as sessin:
         for attempt in range(max_retries):
             try:
-                async with session.get(url, headers=headers, timeout=10) as response:
+                async with sessin.get(url, headers=headers, timeout=10) as response:
                     if response.status == 200:
                         f = await response.text()
 
@@ -148,18 +149,53 @@ async def scrape_movie_info(movie, max_retries=5, delay=2):
                 else:
                     raise Exception(f"Failed to fetch data after {max_retries} attempts: {str(e)}")
 
+
+async def send_msg():
+    async def add_role(interaction : discord.Interaction):
+        role = bot.color_roles[interaction.data['custom_id']]
+        if role in interaction.user.roles:
+            asyncio.create_task(interaction.response.send_message(f"Removed {role.mention} from {interaction.user.mention}", ephemeral=True))
+            await interaction.user.remove_roles(role)
+            return
+        asyncio.create_task(interaction.response.send_message(f"Added {role.mention} to {interaction.user.mention}", ephemeral=True))
+        await interaction.user.add_roles(role)
+        
+    stores = {
+        'red' : '🟥',
+        'green' : '🟩',
+        'blue' : '🟦',
+        'yellow' : '🟨',
+        'pink' : '🐷',
+        'orange' : '🟧',
+        'purple' : '🟪'
+    }
+    view = discord.ui.View(timeout=None)
+    for color in stores.keys():
+        role_id = session.query(Role).filter_by(name = color).first()
+        role = bot.guilds[0].get_role(role_id.id)
+        bot.color_roles[color] = role
+        button = discord.ui.Button(emoji=stores[color], style=discord.ButtonStyle.secondary, custom_id=f"{color}")
+        button.callback = add_role
+        view.add_item(button)
+    embed = discord.Embed(title="Select a color", color=0x00ff00)
+    embed.add_field(name="", value=f"{', '.join([role.mention for role in bot.color_roles.values()])}")
+    embed.set_author(name=f"{bot.user.name}", icon_url=bot.user.avatar.url)
+    rc = get(bot.guilds[0].channels, name="roles")
+    old_message = await rc.fetch_message(1294981556036833341)
+    if old_message:
+        await old_message.edit(embed=embed, view=view)
+    else:
+        await rc.send(embed=embed, view=view)
 @bot.event
 async def on_ready():
     print(f"Bot is ready as {bot.user}")
     await bot.change_presence(activity=discord.Game(name="Ur mother"))
     asyncio.create_task(load_words())
-
     async def add_muted_role_to_db():
         for role in bot.guilds[0].roles:
             role = Role(id = role.id, name=role.name)
             session.add(role)
             session.commit()
-
     async def add_user_to_database(member):
         user = User(id = member.id,name=member.name, avatar=member.avatar.url if member.avatar else None)
         session.add(user)
@@ -171,7 +207,7 @@ async def on_ready():
     for member in bot.guilds[0].members:
         asyncio.create_task(add_user_to_database(member))
     bot.muted_role = get(bot.guilds[0].roles, name="muted")
-    asyncio.create_task(add_muted_role_to_db())
+    asyncio.gather(add_muted_role_to_db(), send_msg())
     if not bot.muted_role:
         bot.muted_role = await bot.guilds[0].create_role(name="muted")
         print("Making a new role")
@@ -787,36 +823,54 @@ class Wordle():
         self.options  = {
                 'wrong' : "⬛",
                 'right' : "🟩",
-                'unplced': "🟨"
+                'unplaced': "🟨"
                 }
         self.message = ""
         print(self.word)
 
     async def check(self, word):
-        if len(word)!=5:
+        if len(word) != 5:
             await self.ctx.send("The word must be 5 letters long")
             return
-        count =0
-        for idx,val in enumerate(word):
+        
+        count = 0
+        word_matched = [False] * 5
+        guess_matched = [False] * 5
+        temp = [self.options['unplaced']] * 5
+        for idx, val in enumerate(word):
             if val == self.word[idx]:
-                count+=1
-                self.message+=self.options['right']
-            elif val in self.word:
-                self.message+=self.options['unplced']
-            else:
-                self.message+=self.options['wrong']
+                count += 1
+                temp[idx] = self.options['right']
+                word_matched[idx] = True
+                guess_matched[idx] = True
+        
+        for idx, val in enumerate(word):
+            if not guess_matched[idx]:
+                if val in self.word:
+                    for target_idx in range(5):
+                        if val == self.word[target_idx] and not word_matched[target_idx]:
+                            temp[target_idx] = self.options['unplaced']
+                            word_matched[target_idx] = True
+                            guess_matched[idx] = True
+                            break
+                if not guess_matched[idx]:
+                    temp[idx] = self.options['wrong']
+        self.message+= "".join(temp)
         self.message += f" {word}"
-        self.tries+=1
-        embed = discord.Embed(description = self.message, color=0x00ff00)
-        embed.set_author(name = self.ctx.author, icon_url=self.ctx.author.avatar.url)
-        embed.set_footer(text=f"{6-self.tries} tries remaining")
-        await self.ctx.send(embed = embed)
+        self.tries += 1
+        
+        embed = discord.Embed(description=self.message, color=0x00ff00)
+        embed.set_author(name=self.ctx.author, icon_url=self.ctx.author.avatar.url)
+        embed.set_footer(text=f"{6 - self.tries} tries remaining")
+        await self.ctx.send(embed=embed)
+        self.message+='\n'
         if count == 5:
-            await self.ctx.send(embed = discord.Embed(description = f"damn you can spell {self.author.mention}", color = 0x00ff00))
-            del bot.wordle[self.author]
-        self.message += '\n'
-        if self.tries==6:
-            await self.ctx.send(embed = discord.Embed(description=f"{self.ctx.author.mention} game over\nThe word was {self.word}", color = 0x00ff00))
+            await self.ctx.send(embed=discord.Embed(description=f"Congrats {self.ctx.author.mention}, you guessed the word!", color=0x00ff00))
+            del bot.wordle[self.ctx.author]
+            return
+
+        if self.tries == 6:
+            await self.ctx.send(embed=discord.Embed(description=f"{self.ctx.author.mention} game over! The word was '{self.word}'.", color=0xff0000))
             del bot.wordle[self.ctx.author]
 
 @bot.command()
@@ -827,5 +881,37 @@ async def wordle(ctx, word):
     game.ctx = ctx
     await game.check(word)
 
+
+class Butt(discord.ui.View):
+    def __init__(self, ctx):
+        super().__init__()
+        self.ctx = ctx
+        self.butt = discord.ui.Button(label="Butt", style=discord.ButtonStyle.primary, custom_id="butt")
+        self.butt.callback = self.show_butt
+        self.add_item(self.butt)
+
+    async def show_butt(self, interaction : discord.Interaction):
+        chads = {740543572524138587 , 909101433083813958, 829684348298199091}
+        if interaction.user.id not in chads:
+            await interaction.response.send_message("nuh uh", ephemeral=True)
+            return
+        modal = discord.ui.Modal(title="Butt")
+        butt = discord.ui.TextInput(label="Butt", style=discord.TextStyle.short, custom_id="butt", placeholder="Butt")
+        modal.add_item(butt)
+        modal.on_submit = self.butt_submit
+        await interaction.response.send_modal(modal)
+    
+    async def butt_submit(self, interaction : discord.Interaction):
+        await self.ctx.send(f"{interaction.data["components"][0]["components"][0]["value"]}", ephemeral=True)
+        await interaction.response.defer()
+
+@bot.command()
+async def butt(ctx):
+    chads = {740543572524138587 , 909101433083813958, 829684348298199091}
+    if ctx.author.id not in chads:
+        await ctx.send("nuh uh")
+        return
+    view = Butt(ctx)
+    await ctx.send(view=view)
 
 bot.run(token=os.getenv("TOKEN"))
