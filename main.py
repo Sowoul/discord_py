@@ -4,8 +4,8 @@ import os
 import random
 import re
 import time
-from collections import deque
-
+from collections import deque, Counter
+import math
 import aiohttp
 import discord
 import yt_dlp
@@ -20,9 +20,21 @@ from sqlalchemy import create_engine, Column, Integer, String, DateTime, Foreign
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker , relationship, Query
 
-os.remove('db.sqlite3')
-
 Base = declarative_base()
+
+class Economy(Base):
+    __tablename__ = "economy"
+    id = Column(Integer, ForeignKey("user.id"), primary_key=True, default=0)
+    cash = Column(Integer)
+    user = relationship("User", back_populates="economy")
+
+class User(Base):
+    __tablename__ = "user"
+    id = Column(Integer, primary_key=True)
+    name = Column(String)
+    avatar = Column(String)
+    roles = relationship("UserRole", back_populates="user")
+    economy = relationship("Economy", back_populates="user", uselist=False)
 
 class UserRole(Base):
     __tablename__ = "userrole"
@@ -31,13 +43,6 @@ class UserRole(Base):
     role_id = Column(Integer, ForeignKey("role.id"))
     user = relationship("User", back_populates="roles")
     role = relationship("Role", back_populates="users")
-
-class User(Base):
-    __tablename__ = "user"
-    id = Column(Integer, primary_key=True)
-    name = Column(String)
-    avatar = Column(String)
-    roles = relationship("UserRole", back_populates="user")
 
 class Role(Base):
     __tablename__ = "role"
@@ -60,24 +65,29 @@ class Diddler(commands.Bot):
         self.words = []
         self.wordle = {}
         self.color_roles = {}
+        self.games = {}
+        self.nums = [i for i in range(0,1001)]
+        self.weights =[(1/(i+1))**1.2 if i<100 else 1/(i+1)**2 for i in range(0,1001)]
+        self.cooldowns = {}
+        self.black = {}
 
-    def deleted(self, message : discord.Message):
+    def deleted(self, message : discord.Message) -> None:
         embed = discord.Embed(description=f"**Message**: {message.content}", color=0x00ff00)
         embed.set_author(name=f"{message.author}", icon_url=message.author.avatar.url if message.author.avatar else None)
         embed.set_footer(text=f"Deleted in #{message.channel}")
         self.logs.append(embed)
 
-    def edited_message(self, before : discord.Message, after: discord.Message):
+    def edited_message(self, before : discord.Message, after: discord.Message) -> None:
         embed = discord.Embed(description=f"**Before**: {before.content}\n **After**: {after.content}", color=0x00ff00)
         embed.set_author(name=f"{before.author}", icon_url=before.author.avatar.url if before.author.avatar else None)
         embed.set_footer(text=f"Edited in #{before.channel}")
         self.changelogs.append(embed)
 
-    def snipe(self, num):
+    def snipe(self, num) -> str:
         if len(self.logs)<num:
             raise ValueError("Not enough messages to snipe")
         return self.logs[-num]
-    def esnipe(self,num):
+    def esnipe(self,num) ->str:
         if len(self.changelogs)<num:
             raise ValueError("Not enough messages to esnipe")
         return self.changelogs[-num]
@@ -103,7 +113,7 @@ async def periodic_member_count_update(guild):
 
 async def load_words():
     with open('words.txt' , 'r') as file:
-        bot.words = file.read().split('\n')[:-1]
+        bot.words = file.read().split(' ')[:-1]
         print(f"{len(bot.words)} words loaded")
 
 
@@ -159,7 +169,7 @@ async def send_msg():
             return
         asyncio.create_task(interaction.response.send_message(f"Added {role.mention} to {interaction.user.mention}", ephemeral=True))
         await interaction.user.add_roles(role)
-        
+
     stores = {
         'red' : '🟥',
         'green' : '🟩',
@@ -180,7 +190,7 @@ async def send_msg():
     embed = discord.Embed(title="Select a color", color=0x00ff00)
     embed.add_field(name="", value=f"{', '.join([role.mention for role in bot.color_roles.values()])}")
     embed.set_author(name=f"{bot.user.name}", icon_url=bot.user.avatar.url)
-    rc = get(bot.guilds[0].channels, name="roles")
+    rc = get(bot.guilds[0].channels, id = 1294954582941896746)
     old_message = await rc.fetch_message(1294981556036833341)
     if old_message:
         await old_message.edit(embed=embed, view=view)
@@ -193,21 +203,40 @@ async def on_ready():
     asyncio.create_task(load_words())
     async def add_muted_role_to_db():
         for role in bot.guilds[0].roles:
-            role = Role(id = role.id, name=role.name)
-            session.add(role)
+            existing_role = session.query(Role).filter_by(id=role.id).first()
+            if existing_role:
+                existing_role.name = role.name
+            else:
+                new_role = Role(id=role.id, name=role.name)
+                session.add(new_role)
             session.commit()
-    async def add_user_to_database(member):
-        user = User(id = member.id,name=member.name, avatar=member.avatar.url if member.avatar else None)
-        session.add(user)
-        session.commit()
-        for role in member.roles:
-            user_role = UserRole(user_id=member.id, role_id=role.id)
-            session.add(user_role)
+        print("Roles added to db")
+    async def add_user_to_database():
+        for member in bot.guilds[0].members:
+            existing_user = session.query(User).filter_by(id=member.id).first()
+            if existing_user:
+                old_cash = session.query(Economy).filter_by(id = member.id).first()
+                if not old_cash:
+                    add_cash = Economy(id = existing_user.id, cash = 0)
+                    session.add(add_cash)
+                existing_user.name = member.name
+                existing_user.avatar = member.avatar.url if member.avatar else None
+            else:
+                new_user = User(id=member.id, name=member.name, avatar=member.avatar.url if member.avatar else None)
+                new_cash = Economy(id = new_user.id, cash=0)
+                session.add(new_cash)
+                session.add(new_user)
             session.commit()
-    for member in bot.guilds[0].members:
-        asyncio.create_task(add_user_to_database(member))
+
+            for role in member.roles:
+                existing_user_role = session.query(UserRole).filter_by(user_id=member.id, role_id=role.id).first()
+                if not existing_user_role:
+                    new_user_role = UserRole(user_id=member.id, role_id=role.id)
+                    session.add(new_user_role)
+            session.commit()
+        print("Users added to db")
     bot.muted_role = get(bot.guilds[0].roles, name="muted")
-    asyncio.gather(add_muted_role_to_db(), send_msg())
+    asyncio.gather(add_muted_role_to_db(), send_msg(), add_user_to_database())
     if not bot.muted_role:
         bot.muted_role = await bot.guilds[0].create_role(name="muted")
         print("Making a new role")
@@ -295,6 +324,8 @@ async def on_member_join(member : discord.Member):
             role = get(member.guild.roles, name="diddy's victim")
             roles = [role]
             existing = User(id=member.id, name=member.name, avatar=member.avatar.url if member.avatar else None)
+            money = Economy(id=existing.id, cash=0)
+            session.add(money)
             session.add(existing)
             session.commit()
         async def ad_role(role):
@@ -791,10 +822,6 @@ async def pfp(ctx, member:discord.Member=None):
     embed.set_author(name=member,icon_url = member.avatar.url)
     await ctx.send(embed = embed)
 
-@bot.command()
-async def blackjack(ctx):
-    return
-
 class Timer:
     def __init__(self, ctx, time):
         self.ctx = ctx
@@ -814,73 +841,72 @@ async def timer(ctx, time):
     timer = Timer(ctx, int(time))
     await timer.start_timer()
 
-class Wordle():
-    def __init__(self, ctx):
-        self.word = random.choice(bot.words)
-        self.tries = 0
-        self.author = ctx.author
-        self.ctx = ctx
-        self.options  = {
-                'wrong' : "⬛",
-                'right' : "🟩",
-                'unplaced': "🟨"
-                }
-        self.message = ""
-        print(self.word)
+# class Wordle():
+#     def __init__(self, ctx):
+#         self.word = random.choice(bot.words)
+#         self.tries = 0
+#         self.author = ctx.author
+#         self.ctx = ctx
+#         self.options  = {
+#                 'wrong' : "⬛",
+#                 'right' : "🟩",
+#                 'unplaced': "🟨"
+#                 }
+#         self.message = ""
+#         print(self.word)
 
-    async def check(self, word):
-        if len(word) != 5:
-            await self.ctx.send("The word must be 5 letters long")
-            return
-        
-        count = 0
-        word_matched = [False] * 5
-        guess_matched = [False] * 5
-        temp = [self.options['unplaced']] * 5
-        for idx, val in enumerate(word):
-            if val == self.word[idx]:
-                count += 1
-                temp[idx] = self.options['right']
-                word_matched[idx] = True
-                guess_matched[idx] = True
-        
-        for idx, val in enumerate(word):
-            if not guess_matched[idx]:
-                if val in self.word:
-                    for target_idx in range(5):
-                        if val == self.word[target_idx] and not word_matched[target_idx]:
-                            temp[target_idx] = self.options['unplaced']
-                            word_matched[target_idx] = True
-                            guess_matched[idx] = True
-                            break
-                if not guess_matched[idx]:
-                    temp[idx] = self.options['wrong']
-        self.message+= "".join(temp)
-        self.message += f" {word}"
-        self.tries += 1
-        
-        embed = discord.Embed(description=self.message, color=0x00ff00)
-        embed.set_author(name=self.ctx.author, icon_url=self.ctx.author.avatar.url)
-        embed.set_footer(text=f"{6 - self.tries} tries remaining")
-        await self.ctx.send(embed=embed)
-        self.message+='\n'
-        if count == 5:
-            await self.ctx.send(embed=discord.Embed(description=f"Congrats {self.ctx.author.mention}, you guessed the word!", color=0x00ff00))
-            del bot.wordle[self.ctx.author]
-            return
+#     async def check(self, word):
+#         if len(word) != 5:
+#             await self.ctx.send("The word must be 5 letters long")
+#             return
 
-        if self.tries == 6:
-            await self.ctx.send(embed=discord.Embed(description=f"{self.ctx.author.mention} game over! The word was '{self.word}'.", color=0xff0000))
-            del bot.wordle[self.ctx.author]
+#         count = 0
+#         word_matched = [False] * 5
+#         guess_matched = [False] * 5
+#         temp = [self.options['unplaced']] * 5
+#         for idx, val in enumerate(word):
+#             if val == self.word[idx]:
+#                 count += 1
+#                 temp[idx] = self.options['right']
+#                 word_matched[idx] = True
+#                 guess_matched[idx] = True
 
-@bot.command()
-async def wordle(ctx, word):
-    if ctx.author not in bot.wordle:
-        bot.wordle[ctx.author] = Wordle(ctx)
-    game = bot.wordle[ctx.author]
-    game.ctx = ctx
-    await game.check(word)
+#         for idx, val in enumerate(word):
+#             if not guess_matched[idx]:
+#                 if val in self.word:
+#                     for target_idx in range(5):
+#                         if val == self.word[target_idx] and not word_matched[target_idx]:
+#                             temp[target_idx] = self.options['unplaced']
+#                             word_matched[target_idx] = True
+#                             guess_matched[idx] = True
+#                             break
+#                 if not guess_matched[idx]:
+#                     temp[idx] = self.options['wrong']
+#         self.message+= "".join(temp)
+#         self.message += f" {word}"
+#         self.tries += 1
 
+#         embed = discord.Embed(description=self.message, color=0x00ff00)
+#         embed.set_author(name=self.ctx.author, icon_url=self.ctx.author.avatar.url)
+#         embed.set_footer(text=f"{6 - self.tries} tries remaining")
+#         await self.ctx.send(embed=embed)
+#         self.message+='\n'
+#         if count == 5:
+#             await self.ctx.send(embed=discord.Embed(description=f"Congrats {self.ctx.author.mention}, you guessed the word!", color=0x00ff00))
+#             del bot.wordle[self.ctx.author]
+#             return
+
+#         if self.tries == 6:
+#             await self.ctx.send(embed=discord.Embed(description=f"{self.ctx.author.mention} game over! The word was '{self.word}'.", color=0xff0000))
+#             del bot.wordle[self.ctx.author]
+
+# @bot.command()
+# async def wordle(ctx, word):
+#     if ctx.author not in bot.wordle:
+#         bot.wordle[ctx.author] = Wordle(ctx)
+#     game = bot.wordle[ctx.author]
+#     game.ctx = ctx
+#     await game.check(word)
 
 class Butt(discord.ui.View):
     def __init__(self, ctx):
@@ -900,7 +926,7 @@ class Butt(discord.ui.View):
         modal.add_item(butt)
         modal.on_submit = self.butt_submit
         await interaction.response.send_modal(modal)
-    
+
     async def butt_submit(self, interaction : discord.Interaction):
         await self.ctx.send(f"{interaction.data["components"][0]["components"][0]["value"]}", ephemeral=True)
         await interaction.response.defer()
@@ -913,5 +939,336 @@ async def butt(ctx):
         return
     view = Butt(ctx)
     await ctx.send(view=view)
+
+@bot.command()
+async def show(ctx):
+    button = discord.ui.Button(label="candy", style = discord.ButtonStyle.secondary)
+    view = discord.ui.View()
+    button.callback = lambda instance : instance.response.send_message("no", ephemeral=True)
+    view.add_item(button)
+    await ctx.send(view = view)
+
+@bot.command()
+async def diddler(ctx):
+    await ctx.send(embed = discord.Embed(title="Welcome to the diddy party"))
+
+class Game(discord.ui.Modal):
+    def __init__(self, ctx):
+        super().__init__(title = "idk", timeout=None)
+        self.ctx = ctx
+        text = discord.ui.TextInput(label = "Type your word")
+        self.add_item(text)
+        self.options  = {
+                'wrong' : "⬛",
+                'right' : "🟩",
+                'unplaced': "🟨"
+                }
+
+    async def on_submit(self, interaction : discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("Not your game lil bro")
+            return
+        temp : discord.Message = bot.games[self.ctx.author]['message']
+        to_check = bot.games[self.ctx.author]['word']
+        msg = bot.games[self.ctx.author]['tries']
+        attempts = bot.games[self.ctx.author]['attempts']
+        word = interaction.data["components"][0]["components"][0]["value"]
+        if len(word)!=5:
+            await interaction.response.send_message("The word must be 5 letters long")
+            return
+        c = Counter(to_check)
+        t = [self.options['wrong']]*5
+        idx=0
+        rights = 0
+        unplaced = 0
+        for i,j in zip(word, to_check):
+            if i==j:
+                t[idx]=self.options['right']
+                c[i]-=1
+                rights+=1
+            idx+=1
+        for idx,val in enumerate(word):
+            if t[idx] == self.options['right']:
+                continue
+            if val in to_check and c[val]>0:
+                t[idx]=self.options['unplaced']
+                unplaced+=1
+                c[val]-=1
+        msg += ''.join(t)
+        msg+=f' {interaction.data["components"][0]["components"][0]["value"]}\n'
+        if word == to_check:
+            wins = int(500 * (attempts/2+1))
+            old_money = session.query(Economy).filter_by(id = self.ctx.author.id).first()
+            if not old_money:
+                old_money = Economy(id = self.ctx.author.id, cash=0)
+                session.add(old_money)
+            old_money.cash += wins
+            session.commit()
+            await temp.edit(embed = discord.Embed(description=f'{msg[-11:-6]}\n{msg[-6:]}\nYou win, the word was ||**{to_check}**||, in **{7-attempts} tries**\nYou won {wins} coins!', color = 0x00ff00), view = discord.ui.View())
+            await interaction.response.defer()
+            return
+        if attempts == 0:
+            wins=rights*100 + unplaced*20
+            old_money = session.query(Economy).filter_by(id = self.ctx.author.id).first()
+            if not old_money:
+                old_money = Economy(id = self.ctx.author.id, cash=0)
+                session.add(old_money)
+            old_money.cash += wins
+            session.commit()
+            await temp.edit(embed = discord.Embed(description=f'Last attempt : {msg[-11:-6]}\n{msg[-6:]}\nGame over, the word was ||**{to_check}**||\nYou won {wins} coins!', color = 0x00ff00), view = discord.ui.View())
+            await interaction.response.defer()
+            return
+
+        bot.games[self.ctx.author]['tries'] = msg
+        view = discord.ui.View(timeout=None)
+        button = discord.ui.Button(label = "Next Try", style=discord.ButtonStyle.green)
+        button.callback = lambda interaction : interaction.response.send_modal(Game(self.ctx))
+        view.add_item(button)
+        embed = discord.Embed(description=msg, title="Wordle", color=0x00ff00)
+        embed.set_author(name=self.ctx.author, icon_url=self.ctx.author.avatar.url if self.ctx.author.avatar else None)
+        embed.set_footer(text=f"{attempts} tries remaining")
+        await temp.edit(embed = embed, view = view)
+        bot.games[self.ctx.author]['attempts']-=1
+        await interaction.response.defer()
+
+class Wrd(discord.ui.View):
+    def __init__(self , ctx : discord.Message, butt = "Start Game"):
+        super().__init__(timeout=None)
+        bot.games[ctx.author] = {"word" : random.choice(bot.words).lower(), "tries" : "", "attempts" : 6}
+        print(bot.games[ctx.author]['word'])
+        self.ctx=ctx
+        self.author = ctx.author
+        button = discord.ui.Button(label = f"{butt}", style = discord.ButtonStyle.green)
+        button.callback = self.startgame
+        self.game = Game(ctx)
+        self.add_item(button)
+    async def startgame(self, interaction : discord.Interaction):
+        if interaction.user.id != self.author.id:
+            await interaction.response.send_message("start a new game by doing $wordle", ephemeral=True)
+        await interaction.response.send_modal(self.game)
+
+@bot.command()
+async def wordle(ctx):
+    wordle = Wrd(ctx)
+    embed = discord.Embed(description="Start the game", title="Wordle", color=0x00ff00)
+    embed.set_author(name=ctx.author, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
+    embed.set_footer(text=f"6 tries remaining")
+
+    message = await ctx.send(embed = embed, view = wordle)
+    bot.games[ctx.author]["message"] = message
+
+@bot.command(aliases=['cash', 'bal'])
+async def money(ctx, dude : discord.Member | None = None):
+    if not dude:
+        dude = ctx.author
+    id = dude.id
+    money = session.query(Economy).filter_by(id= id).first()
+    if not money:
+        money = Economy(id = id, cash=0)
+        session.add(money)
+    embed = discord.Embed(description=f"{dude.mention} has `{money.cash}` coins\nPlay wordle to earn more coins", color=0x00ff00, title="Balance")
+    embed.set_author(name=dude.name, icon_url=dude.avatar.url if dude.avatar else None)
+    await ctx.send(embed=embed)
+
+@bot.command(aliases=["leaderboard"])
+async def lb(ctx):
+    users = session.query(User).join(Economy).order_by(-Economy.cash).all()
+    lbs = []
+    own = 0
+    owncash = 0
+    for idx,user in enumerate(users):
+        if len(lbs)<10:
+            lbs.append(f'{idx+1}. <@{user.id}>  -  `{user.economy.cash}`')
+        if user.id == ctx.author.id:
+            own = idx
+            owncash = user.economy
+    if own>10:
+        lbs.extend(['.']*2)
+        lbs.append(f'{own+1}. {ctx.author.mention}  -  `{owncash.cash}`')
+
+    embed = discord.Embed(title = "Leaderboard", color = 0x00ff00, description='\n'.join(lbs))
+    embed.set_author(name=  ctx.author.name, icon_url= ctx.author.avatar.url if ctx.author.avatar else None)
+    embed.set_footer(text="Earn more coins by playing $wordle")
+    await ctx.send(embed = embed)
+
+@bot.command(aliases=['donate', 'gib'])
+async def give(ctx, to : discord.Member | None = None, amount : int = 0):
+    if ctx.author.id == to.id:
+        await ctx.send("Cant donate to yourself")
+        return
+    if not to:
+        await ctx.send("Enter who to donate to")
+        return
+    if not amount:
+        await ctx.send("Enter a value greater than 0")
+        return
+    fr = session.query(Economy).filter_by(id= ctx.author.id).first()
+    ts = session.query(Economy).filter_by(id = to.id).first()
+    if not fr or not ts:
+        await ctx.send("Something went wrong")
+        return
+    if fr.cash<amount:
+        await ctx.send(f"You dont have {amount} coins brokie")
+        return
+    fr.cash-=amount
+    ts.cash+=amount
+    session.commit()
+    await ctx.send(embed = discord.Embed(color = 0x00ff00, description=f"Successfully sent {amount} from {ctx.author.mention} to {to.mention}"))
+
+@bot.command()
+async def beg(ctx):
+    if ctx.author.id not in bot.cooldowns or time.time() - bot.cooldowns[ctx.author.id] >90:
+        val = random.choices(bot.nums, weights=bot.weights)[0]
+        asyncio.create_task(ctx.send(f'You found {val} coins!'))
+        old = session.query(Economy).filter_by(id = ctx.author.id).first()
+        old.cash += val
+        session.commit()
+        bot.cooldowns[ctx.author.id] = time.time()
+        return
+    await ctx.send(f'Wait {90-int(time.time() - bot.cooldowns[ctx.author.id])} seconds')
+
+class Bj(discord.ui.View):
+    def __init__(self,ctx : discord.Message):
+        super().__init__(timeout=None)
+        self.ctx = ctx
+        hit_button = discord.ui.Button(label = "Hit", style = discord.ButtonStyle.primary)
+        hit_button.callback = self.hit
+        stand_button = discord.ui.Button(label = "stand", style = discord.ButtonStyle.red)
+        stand_button.callback = self.stand
+        self.add_item(hit_button)
+        self.add_item(stand_button)
+
+    async def hit(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message('Not your game, lil bro.', ephemeral=True)
+            return
+        store = bot.black[self.ctx.author.id]
+        user_cards = store['user_cards']
+        dealer_cards = store['dealer_cards']
+        amount = store['amount']
+        new_card = random.randint(1, 13)
+        user_cards.append(new_card)
+
+        aces = user_cards.count(1)
+        sm = 0
+        for val in user_cards:
+            if val > 1:
+                sm += min(val, 10)
+        while aces:
+            if aces - 1 + sm + 11 > 21:
+                sm += aces
+                break
+            else:
+                aces -= 1
+                sm += 11
+
+        embed = discord.Embed(
+            title="Blackjack",
+            description=f"Your hand: {' '.join(map(str, user_cards))}\nDealer's cards: {' '.join(map(str, dealer_cards))}",
+            color=0x00ff00
+        )
+        embed.set_author(name=self.ctx.author.name, icon_url=self.ctx.author.avatar.url if self.ctx.author.avatar else None)
+        embed.set_footer(text=f"Bet: {amount}")
+        old_money = session.query(Economy).filter_by(id = self.ctx.author.id).first()
+        if sm > 21:
+            embed.title = "You Bust"
+            embed.description += f'\nBalance : {old_money.cash} - {amount}'
+            old_money.cash -= amount
+            embed.color = 0xff0000
+            await store['message'].edit(embed=embed, view=discord.ui.View())
+            session.commit()
+        else:
+            await store['message'].edit(embed=embed, view=Bj(self.ctx))
+
+
+    async def stand(self, interaction: discord.Interaction):
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message('Not your game, lil bro.', ephemeral=True)
+            return
+        store = bot.black[self.ctx.author.id]
+        user_cards = store['user_cards']
+        dealer_cards = store['dealer_cards']
+        amount = store['amount']
+        dealer_cards.pop()
+        next_card = random.randint(1, 13)
+        dealer_cards.append(next_card)
+
+        sm = 0
+        aces = 0
+        for val in dealer_cards:
+            if val == 1:
+                aces += 1
+            else:
+                sm += min(10, val)
+
+        while sm < 17:
+            new_card = random.randint(1, 13)
+            dealer_cards.append(new_card)
+            if new_card == 1:
+                aces += 1
+            else:
+                sm += min(10, new_card)
+        while aces:
+            if aces - 1 + sm + 11 > 21:
+                sm += aces
+                break
+            else:
+                aces -= 1
+                sm += 11
+
+        user_total = sum(min(10, card) for card in user_cards)
+
+        embed = discord.Embed(
+            title="Blackjack",
+            description=f"Your hand: {' '.join(map(str, user_cards))}\nDealer's cards: {' '.join(map(str, dealer_cards))}",
+            color=0x00ff00
+        )
+        embed.set_author(name=self.ctx.author.name, icon_url=self.ctx.author.avatar.url if self.ctx.author.avatar else None)
+        embed.set_footer(text=f"Bet: {amount}")
+        old_bal = session.query(Economy).filter_by(id = self.ctx.author.id).first()
+        if sm > 21:
+            embed.title = "Dealer Busts! You Win!"
+            embed.description += f'\nBalance : {old_bal.cash} + {amount}'
+            embed.color = 0x00ff00
+            old_bal.cash+=amount
+        elif sm > user_total:
+            embed.title = "Dealer Wins!"
+            embed.description += f'\nBalance : {old_bal.cash} - {amount}'
+            embed.color = 0xff0000
+            old_bal.cash-=amount
+        elif sm == user_total:
+            embed.title = "It's a Draw!"
+            embed.description += f'\nBalance : {old_bal.cash} + 0'
+            embed.color = 0xffff00
+        else:
+            embed.title = "You Win!"
+            embed.color = 0x00ff00
+            embed.description += f'\nBalance : {old_bal.cash} + {amount}'
+            old_bal.cash += amount
+        session.commit()
+        await store['message'].edit(embed=embed, view=discord.ui.View())
+
+@bot.command(aliases=['blackjack'])
+async def bj(ctx : discord.Message, amount : int = 100):
+    if session.query(Economy).filter_by(id = ctx.author.id).first().cash < amount:
+        await ctx.send(f"You dont have {amount} money boy")
+        return
+    view = Bj(ctx)
+    user_cards = [random.randint(1,13) , random.randint(1,13)]
+    dealer_cards = [random.randint(1,13), "?"]
+    embed = discord.Embed(title='Blackjack',
+    description=f"Your hand : {' '.join([str(i) for i in user_cards])}\nDealer's cards : {' '.join([str(i) for i in dealer_cards])}",
+    color=0x00ff00
+    )
+    embed.set_author(name = ctx.author.name, icon_url = ctx.author.avatar.url if ctx.author.avatar else None)
+    embed.set_footer(text = f"Bet : {amount}")
+    msg = await ctx.send(embed= embed, view = view)
+    temp = {
+        'message' : msg,
+        'amount' : amount,
+        'user_cards' : user_cards,
+        'dealer_cards' : dealer_cards
+    }
+    bot.black[ctx.author.id] = temp
 
 bot.run(token=os.getenv("TOKEN"))
