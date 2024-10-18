@@ -8,6 +8,7 @@ from collections import deque, Counter
 import math
 import aiohttp
 import discord
+import discord.ext.commands
 import yt_dlp
 from aiohttp import ClientError
 from discord.ext import commands
@@ -19,6 +20,8 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, CheckConstraint
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker , relationship, Query
+
+import discord.ext
 
 Base = declarative_base()
 
@@ -84,7 +87,7 @@ class Diddler(commands.Bot):
         self.race_cooldowns = {}
         self.black = {}
         self.race = {}
-        self.playing = set()
+        self.playing = {}
 
 
     def deleted(self, message : discord.Message) -> None:
@@ -641,173 +644,6 @@ async def leave_vc(ctx):
     await ctx.voice_client.disconnect()
 
 
-@bot.command(aliases=["play"])
-async def play_music(ctx, youtube_url: str):
-    if ctx.voice_client and ctx.voice_client.channel != ctx.author.voice.channel:
-        await ctx.send("You aren't in the party lil bro")
-        return
-    if not ctx.voice_client:
-        if ctx.author.voice:
-            await ctx.author.voice.channel.connect()
-        else:
-            await ctx.send("You're not in the party")
-            return
-
-    embed = discord.Embed(description=f"Loading: {youtube_url}", color=0x00ff00)
-    msg = await ctx.send(embed=embed)
-
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'default_search': 'auto',
-        'geo_bypass': True,
-        'no_warnings': True,
-        'ignoreerrors': False,
-        'username': os.environ.get("YT_USERNAME"),
-        'password': os.environ.get("YT_PASSWORD"),
-        'user_agent': (
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-            'AppleWebKit/537.36 (KHTML, like Gecko) '
-            'Chrome/91.0.4472.124 Safari/537.36'
-        )
-    }
-
-    async def play_next(ctx):
-        if bot.song_queue:
-            next_song = bot.song_queue.popleft()
-            await play_music(ctx, next_song)
-
-    def after_playing(error):
-        coro = play_next(ctx)
-        fut = asyncio.run_coroutine_threadsafe(coro, bot.loop)
-        try:
-            fut.result()
-        except Exception as e:
-            print(f"Error occurred: {e}")
-
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(youtube_url, download=False)
-            if 'entries' in info:
-                info = info['entries'][0]
-            audio_url = info['url']
-    except yt_dlp.utils.DownloadError as e:
-        await msg.edit(content=f"An error occurred while extracting audio: {e}")
-        return
-    except Exception as e:
-        await msg.edit(content=f"An unexpected error occurred: {e}")
-        return
-
-    source = discord.FFmpegPCMAudio(audio_url)
-    if ctx.voice_client.is_playing():
-        bot.song_queue.append(youtube_url)
-        embed = discord.Embed(description=f"Added to queue: [{info.get('title', 'Unknown Title')}]({youtube_url})", color=0x00ff00)
-        await msg.edit(embed=embed)
-    else:
-        ctx.voice_client.play(source, after=after_playing)
-        embed = discord.Embed(description=f"Now playing: [{info.get('title', 'Unknown Title')}]({youtube_url})", color=0x00ff00)
-        await msg.edit(embed=embed)
-
-@bot.command()
-async def stop(ctx):
-    if ctx.voice_client and ctx.voice_client.channel != ctx.author.voice.channel:
-        await ctx.send("You arent in the party lil bro")
-        return
-
-    if not ctx.author.voice:
-        await ctx.send("You arent in a vc")
-        return
-
-    if ctx.voice_client:
-        ctx.voice_client.stop()
-        await ctx.send("Music stopped.")
-    else:
-        await ctx.send("I'm not in a voice channel.")
-
-@bot.command(aliases=["search"])
-async def search_song(ctx, *, song):
-    if ctx.voice_client and ctx.voice_client.channel != ctx.author.voice.channel:
-        await ctx.send("You aren't in the party lil bro")
-        return
-    if not ctx.voice_client:
-        if ctx.author.voice:
-            await ctx.author.voice.channel.connect()
-        else:
-            await ctx.send("You're not in the party")
-            return
-
-    embed = discord.Embed(description=f"Searching for: {song}", color=0x00ff00)
-    msg = await ctx.send(embed=embed)
-
-    async def getinfo_song(song):
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'quiet': True,
-            'default_search': 'auto',
-            'geo_bypass': True,
-            'no_warnings': True,
-            'ignoreerrors': False,
-            'username': os.environ.get("YT_USERNAME"),
-            'password': os.environ.get("YT_PASSWORD"),
-            'user_agent': (
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                'AppleWebKit/537.36 (KHTML, like Gecko) '
-                'Chrome/91.0.4472.124 Safari/537.36'
-            )
-        }
-
-        async def play_next(ctx):
-            if bot.song_queue:
-                next_song = bot.song_queue.popleft()
-                await play_music(ctx, next_song)
-
-        def after_playing(error):
-            coro = play_next(ctx)
-            fut = asyncio.run_coroutine_threadsafe(coro, bot.loop)
-            try:
-                fut.result()
-            except Exception as e:
-                print(f"Error occurred: {e}")
-
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(f"ytsearch:{song}", download=False)
-                if 'entries' in info:
-                    info = info['entries'][0]
-                audio_url = info['url']
-        except yt_dlp.utils.DownloadError as e:
-            await msg.edit(content=f"An error occurred while extracting audio: {e}")
-            return
-        except Exception as e:
-            await msg.edit(content=f"An unexpected error occurred: {e}")
-            return
-
-        source = discord.FFmpegPCMAudio(audio_url)
-        if ctx.voice_client.is_playing():
-            bot.song_queue.append(f"ytsearch:{song}")
-            embed = discord.Embed(description=f"Added to queue: [{info.get('title', 'Unknown Title')}]", color=0x00ff00)
-            await msg.edit(embed=embed)
-        else:
-            ctx.voice_client.play(source, after=after_playing)
-            embed = discord.Embed(description=f"Now playing: [{info.get('title', 'Unknown Title')}]", color=0x00ff00)
-            await msg.edit(embed=embed)
-
-    asyncio.create_task(getinfo_song(song))
-
-@bot.command(aliases=["skip"])
-async def next(ctx):
-    if ctx.voice_client and ctx.voice_client.channel != ctx.author.voice.channel:
-        await ctx.send("You aren't in the party lil bro")
-        return
-    if not ctx.voice_client:
-        await ctx.send("You're not in the party")
-        return
-    if ctx.voice_client:
-        ctx.voice_client.stop()
-        await ctx.send("Skipped the song.")
-    else:
-        await ctx.send("I'm not in a voice channel.")
-
 @bot.command()
 async def boobs(ctx, user : discord.Member = None):
     if not user:
@@ -924,14 +760,14 @@ class Game(discord.ui.Modal):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("Not your game lil bro")
             return
-        temp : discord.Message = bot.games[self.ctx.author]['message']
-        to_check = bot.games[self.ctx.author]['word']
-        msg = bot.games[self.ctx.author]['tries']
-        attempts = bot.games[self.ctx.author]['attempts']
         word = interaction.data["components"][0]["components"][0]["value"]
         if len(word)!=5:
             await interaction.response.send_message("The word must be 5 letters long")
             return
+        temp : discord.Message = bot.games[self.ctx.author]['message']
+        to_check = bot.games[self.ctx.author]['word']
+        msg = bot.games[self.ctx.author]['tries']
+        attempts = bot.games[self.ctx.author]['attempts']
         c = Counter(to_check)
         t = [self.options['wrong']]*5
         idx=0
@@ -962,8 +798,9 @@ class Game(discord.ui.Modal):
             session.commit()
             await temp.edit(embed = discord.Embed(description=f'{msg[-11:-6]}\n{msg[-6:]}\nYou win, the word was ||**{to_check}**||, in **{7-attempts} tries**\nYou won {wins} coins!', color = 0x00ff00), view = discord.ui.View())
             await interaction.response.defer()
-            if self.ctx.author.id in bot.playing:
-                bot.playing.remove(self.ctx.author.id)
+            if self.ctx.author.id not in bot.playing or bot.playing[self.ctx.author.id] != self.ctx.message.id:
+                return
+            del bot.playing[self.ctx.author.id]
             return
         if attempts == 0:
             wins=rights*100 + unplaced*20
@@ -975,8 +812,9 @@ class Game(discord.ui.Modal):
             session.commit()
             await temp.edit(embed = discord.Embed(description=f'Last attempt : {msg[-11:-6]}\n{msg[-6:]}\nGame over, the word was ||**{to_check}**||\nYou won {wins} coins!', color = 0x00ff00), view = discord.ui.View())
             await interaction.response.defer()
-            if self.ctx.author.id in bot.playing:
-                bot.playing.remove(self.ctx.author.id)
+            if self.ctx.author.id not in bot.playing or bot.playing[self.ctx.author.id] != self.ctx.message.id:
+                return
+            del bot.playing[self.ctx.author.id]
             return
 
         bot.games[self.ctx.author]['tries'] = msg
@@ -993,10 +831,10 @@ class Game(discord.ui.Modal):
 
 class Wrd(discord.ui.View):
     def __init__(self , ctx : discord.Message, butt = "Start Game"):
-        super().__init__(timeout=120)
+        super().__init__(timeout=180)
         bot.games[ctx.author] = {"word" : random.choice(bot.words), "tries" : "", "attempts" : 6}
         print(bot.games[ctx.author]['word'])
-        self.ctx=ctx
+        self.ctx : discord.ext.command.Context =ctx
         self.author = ctx.author
         button = discord.ui.Button(label = f"{butt}", style = discord.ButtonStyle.green)
         button.callback = self.startgame
@@ -1004,12 +842,13 @@ class Wrd(discord.ui.View):
         self.add_item(button)
 
     async def on_timeout(self):
+        if self.ctx.author.id not in bot.playing or bot.playing[self.ctx.author.id] != self.ctx.message.id:
+            return
         embed = embed = discord.Embed(description="Timed out", color=0xff0000)
         embed.set_author(name=self.ctx.author, icon_url=self.ctx.author.avatar.url if self.ctx.author.avatar else None)
         embed.set_footer(text="Game timed out")
         await bot.games[self.ctx.author]['message'].edit(embed = embed, view = discord.ui.View())
-        if self.ctx.author.id in bot.playing:
-            bot.playing.remove(self.ctx.author.id)
+        del bot.playing[self.ctx.author.id]
 
     async def startgame(self, interaction : discord.Interaction):
         if interaction.user.id != self.author.id:
@@ -1018,7 +857,7 @@ class Wrd(discord.ui.View):
         await interaction.response.send_modal(self.game)
 
 @bot.command()
-async def wordle(ctx : discord.Message):
+async def wordle(ctx : discord.ext.commands.Context):
     if ctx.author.id in bot.playing:
         await ctx.send(f"You are already in a game {ctx.author.mention}, either finish that, or wait 2 minutes")
         return
@@ -1026,7 +865,7 @@ async def wordle(ctx : discord.Message):
     embed = discord.Embed(description="Start the game", title="Wordle", color=0x00ff00)
     embed.set_author(name=ctx.author, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     embed.set_footer(text=f"6 tries remaining")
-    bot.playing.add(ctx.author.id)
+    bot.playing[ctx.author.id] = ctx.message.id
     message = await ctx.send(embed = embed, view = wordle)
     bot.games[ctx.author]["message"] = message
 
@@ -1118,6 +957,9 @@ class Bj(discord.ui.View):
         self.add_item(stand_button)
 
     async def on_timeout(self):
+        if self.ctx.author.id not in bot.playing or bot.playing[self.ctx.author.id] != self.ctx.message.id:
+            return
+        del bot.playing[self.ctx.author.id]
         store = bot.black[self.ctx.author.id]
         amount = store['amount']
         old_money = session.query(Economy).filter_by(id = self.ctx.author.id).first()
@@ -1132,8 +974,6 @@ class Bj(discord.ui.View):
         embed.color = 0xff0000
         await store['message'].edit(embed=embed, view=discord.ui.View())
         session.commit()
-        if self.ctx.author.id in bot.playing:
-            bot.playing.remove(self.ctx.author.id)
 
     def card_name(self, card_value, suit):
         if card_value == 1:
@@ -1194,8 +1034,9 @@ class Bj(discord.ui.View):
             embed.color = 0xff0000
             await store['message'].edit(embed=embed, view=discord.ui.View())
             session.commit()
-            if self.ctx.author.id in bot.playing:
-                bot.playing.remove(self.ctx.author.id)
+            if self.ctx.author.id not in bot.playing or bot.playing[self.ctx.author.id] != self.ctx.message.id:
+                return
+            del bot.playing[self.ctx.author.id]
         else:
             await store['message'].edit(embed=embed, view=Bj(self.ctx))
         await interaction.response.defer()
@@ -1291,12 +1132,12 @@ class Bj(discord.ui.View):
         session.commit()
         asyncio.create_task(store['message'].edit(embed=embed, view=discord.ui.View()))
         await interaction.response.defer()
-        if self.ctx.author.id in bot.playing:
-            bot.playing.remove(self.ctx.author.id)
-
+        if self.ctx.author.id not in bot.playing or bot.playing[self.ctx.author.id] != self.ctx.message.id:
+            return
+        del bot.playing[self.ctx.author.id]
 
 @bot.command(aliases=['blackjack'])
-async def bj(ctx: discord.Message, amount: int | str= 100):
+async def bj(ctx: discord.ext.commands.Context, amount: int | str= 100):
     if ctx.author.id in bot.playing:
         await ctx.send(f"You are already in a game {ctx.author.mention}, either finish that, or wait 2 minutes")
         return
@@ -1311,7 +1152,7 @@ async def bj(ctx: discord.Message, amount: int | str= 100):
     if session.query(Economy).filter_by(id=ctx.author.id).first().cash < amount:
         await ctx.send(f"You don't have {amount} money boy")
         return
-    bot.playing.add(ctx.author.id)
+    bot.playing[ctx.author.id]= ctx.message.id
     view = Bj(ctx)
     user_cards = [(random.randint(1, 13), random.choice(Bj.suits)), (random.randint(1, 13), random.choice(Bj.suits))]
     dealer_cards = [(random.randint(1, 13), random.choice(Bj.suits)), ("?", "?")]
@@ -1352,8 +1193,9 @@ class Challenge(discord.ui.Modal):
         self.text = discord.ui.TextInput(label=self.store['para'])
         self.add_item(self.text)
     async def on_timeout(self):
-        if self.ctx.author.id in bot.playing:
-            bot.playing.remove(self.ctx.author.id)
+        if self.ctx.author.id not in bot.playing or bot.playing[self.ctx.author.id] != self.ctx.message.id:
+            return
+        del bot.playing[self.ctx.author.id]
         msg = self.store['message']
         old_bal = session.query(Economy).filter_by(id = self.ctx.author.id).first()
         embed = discord.Embed(title = "Typing race", color = 0xff0000)
@@ -1385,8 +1227,9 @@ class Challenge(discord.ui.Modal):
             embed.add_field(name="New Balance", value=f"{old_bal.cash} - 100")
             old_bal.cash -=100
             await self.store['message'].edit(embed = embed, view = discord.ui.View())
-        if self.ctx.author.id in bot.playing:
-            bot.playing.remove(self.ctx.author.id)
+        if self.ctx.author.id not in bot.playing or bot.playing[self.ctx.author.id] != self.ctx.message.id:
+            return
+        del bot.playing[self.ctx.author.id]
         session.commit()
         await interaction.response.defer()
         bot.race_cooldowns[self.ctx.author.id] = time.time()
@@ -1400,8 +1243,9 @@ class Race(discord.ui.View):
         self.add_item(button)
 
     async def on_timeout(self):
-        if self.ctx.author.id in bot.playing:
-            bot.playing.remove(self.ctx.author.id)
+        if self.ctx.author.id not in bot.playing or bot.playing[self.ctx.author.id] != self.ctx.message.id:
+            return
+        del bot.playing[self.ctx.author.id]
     async def start_race(self, interaction : discord.Interaction):
         if interaction.user.id != self.ctx.author.id:
             await interaction.response.send_message("Not your race lil bro", ephemeral=True)
@@ -1430,7 +1274,7 @@ async def race(ctx):
         'para' : ' '.join(random.choices(bot.words, k=5))
     }
     bot.race[ctx.author.id]['message'] = await ctx.send(embed = embed, view = view)
-    bot.playing.add(ctx.author.id)
+    bot.playing[ctx.author.id] = ctx.message.id
     bot.race_cooldowns[ctx.author.id] = time.time()
 
 @bot.command()
@@ -1454,6 +1298,17 @@ async def remove(ctx, user: discord.User, amount: int):
         return
     session.query(Economy).filter_by(id = user.id).first().cash -= amount
     session.commit()
+
+@bot.command(aliases = ['tall'])
+async def height(ctx, user : discord.Member = None):
+    if not user:
+        user = ctx.author
+    lower = 1
+    upper = 8 if "woman" not in {role.name.lower() for role in ctx.guild.get_member(user.id).roles} else 3
+    msg = f"```     O     \n    \\|/   \n" + random.randint(lower,upper)*"     |\n" + "    / \\```"
+    embed = discord.Embed(description=msg, color=0x00ff00, title=f"{user.name}'s Height")
+    embed.set_author(name=f"{user}", icon_url=user.avatar.url if user.avatar else None)
+    await ctx.send(embed=embed)
 
 if __name__ == '__main__':
     bot.run(os.getenv("TOKEN"))
