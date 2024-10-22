@@ -1,5 +1,7 @@
 import asyncio
-
+from pyDes import *
+import base64
+import datetime
 import os
 import random
 import re
@@ -9,7 +11,7 @@ import math
 import aiohttp
 import discord
 import discord.ext.commands
-import yt_dlp
+import json
 from aiohttp import ClientError
 from discord.ext import commands
 from discord.utils import get
@@ -25,6 +27,19 @@ import discord.ext
 
 Base = declarative_base()
 
+class Level(Base):
+    __tablename__ = "level"
+    id = Column(Integer, ForeignKey("user.id"), primary_key = True)
+    level = Column(Integer)
+    current = Column(Integer)
+    user = relationship("User", back_populates="level")
+
+class Job(Base):
+    __tablename__ = "job"
+    id = Column(Integer, ForeignKey("user.id"), primary_key=True)
+    name = Column(String)
+    salary = Column(Integer)
+    user = relationship("User", back_populates="job")
 
 class Economy(Base):
     __tablename__ = "economy"
@@ -43,6 +58,7 @@ class Economy(Base):
     @cash.setter
     def cash(self, value):
         self._cash = max(value, 0)
+
 class User(Base):
     __tablename__ = "user"
     id = Column(Integer, primary_key=True)
@@ -50,6 +66,9 @@ class User(Base):
     avatar = Column(String)
     roles = relationship("UserRole", back_populates="user")
     economy = relationship("Economy", back_populates="user", uselist=False)
+    bank = relationship("Bank", back_populates="user", uselist=False)
+    level = relationship("Level", back_populates="user", uselist=False)
+    job = relationship("Job", back_populates="user", uselist=False)
 
 class UserRole(Base):
     __tablename__ = "userrole"
@@ -64,6 +83,20 @@ class Role(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String)
     users = relationship("UserRole", back_populates="role")
+
+class Bank(Base):
+    __tablename__ = "bank"
+    id = Column(Integer, ForeignKey("user.id"), primary_key=True)
+    user = relationship("User", back_populates="bank")
+    _cash = Column(Integer)
+
+    @property
+    def cash(self):
+        return max(self._cash, 0)
+
+    @cash.setter
+    def cash(self, value):
+        self._cash = max(value, 0)
 
 engine = create_engine("sqlite:///db.sqlite3")
 Base.metadata.create_all(engine)
@@ -88,6 +121,16 @@ class Diddler(commands.Bot):
         self.black = {}
         self.race = {}
         self.playing = {}
+        self.lastmsg : discord.Message | None = None
+        self.song_msg : discord.Message | None = None
+        self.links = []
+        self.vc = None
+        self.jobs = {
+            "housewife" : {"salary" : 15000, "min" : 10},
+            "factory-worker" : {"salary" : 5000, "min" : 5},
+            "streamer" : {"salary" : 1000, "min" : 3},
+            "clown" : {"salary" : 500, "min" : 1}
+        }
 
 
     def deleted(self, message : discord.Message) -> None:
@@ -133,13 +176,15 @@ async def update_member_count(guild):
 async def periodic_member_count_update(guild):
     while True:
         await update_member_count(guild)
-        await asyncio.sleep(3000)
+        await asyncio.sleep(6000)
 
 async def load_words():
     with open('words.txt' , 'r') as file:
         bot.words = file.read().split(' ')[:-1]
         print(f"{len(bot.words)} words loaded")
 
+search_url = "https://www.jiosaavn.com/api.php?__call=autocomplete.get&_format=json&_marker=0&cc=in&includeMetaTags=1&query="
+song_url = "https://www.jiosaavn.com/api.php?__call=song.getDetails&cc=in&_marker=0%3F_marker%3D0&_format=json&pids="
 
 
 async def scrape_movie_info(movie, max_retries=5, delay=2):
@@ -219,7 +264,49 @@ async def send_msg():
     if old_message:
         await old_message.edit(embed=embed, view=view)
     else:
+
         await rc.send(embed=embed, view=view)
+
+class Raward(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        button = discord.ui.Button(label = "Click me", style=discord.ButtonStyle.green)
+        button.callback = self.press
+        self.add_item(button)
+
+    async def on_timeout(self):
+        await bot.lastmsg.delete()
+
+    async def press(self, interaction : discord.Interaction):
+        self.timeout = None
+        old_cash = session.query(Economy).filter_by(id = interaction.user.id).first()
+        rand = random.randint(10,1000)
+        embed = discord.Embed(title = "Reward added", color = 0x00ff00, description=f"Clamined by {interaction.user.mention}")
+        embed.add_field(name = "Balance", value = f"{old_cash.cash} + {rand}")
+        old_cash.cash += rand
+        session.commit()
+        await interaction.message.edit(embed=embed, view = discord.ui.View(timeout=None))
+
+async def send_random():
+    while True:
+        embed = discord.Embed(title = "Click me for a reward", color = 0x00ff00)
+        bot.lastmsg = await bot.get_channel(1287525272748560499).send(embed = embed, view = Raward())
+        to_sleep = random.randint(30, 60)
+        await asyncio.sleep(to_sleep*60)
+
+async def apply_interest(guild):
+    while True:
+        await asyncio.sleep(60*60)
+        rate = random.gauss(0.08, 0.01)
+        rate = max(0.01, min(0.3, rate))
+        chann = get(guild.channels, id = 1297858484506988565)
+        asyncio.create_task(chann.edit(name = f"Interest rate: {rate*100:.2f}%"))
+        for user in guild.members:
+            old_user = session.query(User).filter_by(id = user.id).first()
+            old_user.bank.cash += min(10_000 * old_user.level.level ,old_user.bank.cash * rate)
+            old_user.bank.cash = math.ceil(old_user.bank.cash)
+            old_user.economy.cash += old_user.job.salary
+        session.commit()
 @bot.event
 async def on_ready():
     print(f"Bot is ready as {bot.user}")
@@ -239,12 +326,22 @@ async def on_ready():
         for member in bot.guilds[0].members:
             existing_user = session.query(User).filter_by(id=member.id).first()
             if existing_user:
-                old_cash = session.query(Economy).filter_by(id = member.id).first()
-                if old_cash.cash < 0:
-                    old_cash.cash = 0
+                old_cash = existing_user.economy
+                old_bank = existing_user.bank
+                old_level = existing_user.level
+                old_job = existing_user.job
+                if not old_bank:
+                    add_bank = Bank(id = existing_user.id, cash = 0)
+                    session.add(add_bank)
                 if not old_cash:
                     add_cash = Economy(id = existing_user.id, cash = 0)
                     session.add(add_cash)
+                if not old_level:
+                    add_level = Level(id = existing_user.id, level = 1, current = 20)
+                    session.add(add_level)
+                if not old_job:
+                    add_job = Job(id = existing_user.id, name = "clown", salary = bot.jobs["clown"]["salary"])
+                    session.add(add_job)
                 existing_user.name = member.name
                 existing_user.avatar = member.avatar.url if member.avatar else None
             else:
@@ -268,15 +365,32 @@ async def on_ready():
         print("Making a new role")
         await asyncio.gather(*(channel.set_permissions(bot.muted_role, speak=False, send_messages=False) for channel in bot.guilds[0].channels))
     print("Muted role is set up.")
+    bot.loop.create_task(send_random())
+    await bot.tree.sync()
+    print("Slash commands synced")
     for guild in bot.guilds:
         bot.loop.create_task(periodic_member_count_update(guild))
-
+        bot.loop.create_task(apply_interest(guild))
 @bot.event
 async def on_message(message):
+    async def check_level_up():
+        if message.author.id == bot.user.id:
+            return
+        user : User = session.query(User).filter_by(id = message.author.id).first()
+        user.level.current -= 1
+        if user.level.current <= 0:
+            user.level.level+=1
+            inc = (user.level.level)**2 * 500
+            user.level.current = int(user.level.level**1.5) * 20
+            embed = discord.Embed(title = "Level up", description=f"{message.author.mention}, you have leveled up to {user.level.level}",color=0xC3B1E1)
+            embed.add_field(name="Balance", value=f"{user.economy.cash} + {inc}")
+            user.economy.cash += inc
+            await get(bot.guilds[0].channels, id = 1297979432149057626).send(embed = embed)
+        session.commit()
     async def sendmsg():
         if message.channel.id==1293821426616369232 and not message.content.isdigit():
             await message.delete()
-    asyncio.create_task(sendmsg())
+    asyncio.gather(sendmsg(),check_level_up())
     if message.channel.id!=1293821426616369232:
         await bot.process_commands(message)
 
@@ -351,8 +465,12 @@ async def on_member_join(member : discord.Member):
             roles = [role]
             existing = User(id=member.id, name=member.name, avatar=member.avatar.url if member.avatar else None)
             money = Economy(id=existing.id, cash=0)
-            session.add(money)
+            bank = Bank(id=existing.id, cash=0)
+            level = Level(id = existing.id, level = 1, current = 20)
             session.add(existing)
+            session.add(bank)
+            session.add(money)
+            session.add(level)
             session.commit()
         async def ad_role(role):
             try:
@@ -381,11 +499,6 @@ async def on_voice_state_update(member, before, after):
             if len(voice_client.channel.members) == 1:
                 await voice_client.disconnect()
                 bot.song_queue = deque()
-
-@bot.command(aliases=["hi", "hey"])
-async def hello(ctx):
-    embed= discord.Embed(description=(f"Hello there {ctx.author.mention}, want some kids?"), color=0x00ff00)
-    await ctx.send(embed=embed)
 
 @bot.command(aliases=[])
 async def snipe(ctx, nums = 1):
@@ -623,25 +736,6 @@ async def watch(ctx, *, movie):
             await message.edit(content=f"An error occurred: {str(e)}")
     asyncio.create_task(update_results())
 
-@bot.command(aliases=["join"])
-async def join_vc(ctx):
-    if ctx.voice_client and ctx.voice_client.channel != ctx.author.voice.channel:
-        await ctx.send("You arent in the party lil bro")
-        return
-    if not ctx.author.voice:
-        await ctx.send("You arent in a vc")
-        return
-    await ctx.author.voice.channel.connect()
-
-@bot.command(aliases=["leave"])
-async def leave_vc(ctx):
-    if ctx.voice_client and ctx.voice_client.channel != ctx.author.voice.channel:
-        await ctx.send("You arent in the party lil bro")
-        return
-    if not ctx.author.voice:
-        await ctx.send("You arent in a vc")
-        return
-    await ctx.voice_client.disconnect()
 
 
 @bot.command()
@@ -874,27 +968,31 @@ async def money(ctx, dude : discord.Member | None = None):
     if not dude:
         dude = ctx.author
     id = dude.id
-    money = session.query(Economy).filter_by(id= id).first()
+    user = session.query(User).filter_by(id = id).first()
+    money = user.economy
+    bank = user.bank
     if not money:
         money = Economy(id = id, cash=0)
         session.add(money)
-    embed = discord.Embed(description=f"{dude.mention} has `{money.cash}` coins\nPlay wordle to earn more coins", color=0x00ff00, title="Balance")
+    embed = discord.Embed(color=0x00ff00, title="Balance")
+    embed.add_field(name="Cash", value=f"{money.cash}")
+    embed.add_field(name="Bank", value=f"{bank.cash}")
     embed.set_author(name=dude.name, icon_url=dude.avatar.url if dude.avatar else None)
     await ctx.send(embed=embed)
 
 @bot.command(aliases=["leaderboard", "top", "baltop"])
 async def lb(ctx):
-    users = session.query(User).join(Economy).order_by(-Economy._cash).all()
+    users = session.query(User).join(Economy).join(Bank).order_by(-Economy._cash - Bank._cash).all()
     lbs = []
     own = 0
     owncash = 0
     for idx,user in enumerate(users):
         if len(lbs)<10:
-            lbs.append(f'{idx+1}. <@{user.id}>  -  `{user.economy.cash}`')
+            lbs.append(f'{idx+1}. <@{user.id}>  -  `{user.economy.cash} + {user.bank.cash} = {user.economy.cash + user.bank.cash}`')
         if user.id == ctx.author.id:
             own = idx
             owncash = user.economy
-    if own>10:
+    if own>=10:
         lbs.extend(['.']*2)
         lbs.append(f'{own+1}. {ctx.author.mention}  -  `{owncash.cash}`')
 
@@ -1309,6 +1407,245 @@ async def height(ctx, user : discord.Member = None):
     embed = discord.Embed(description=msg, color=0x00ff00, title=f"{user.name}'s Height")
     embed.set_author(name=f"{user}", icon_url=user.avatar.url if user.avatar else None)
     await ctx.send(embed=embed)
+
+async def get_links(title : str):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    }
+
+    async with aiohttp.ClientSession() as sn:
+        global search_url
+        async with sn.get(search_url + title, headers=headers, timeout=10) as response:
+            store = json.loads(await response.text())
+            links = [i['more_info']['song_pids'] for i in  store['albums']['data']]
+            for idx,i in enumerate(links):
+                if ',' in i:
+                    links[idx] = i.split(',')[0]
+                    links.append(i.split(', ')[1])
+            return links
+
+def decrypt_url(url):
+    des_cipher = des(b"38346591", ECB, b"\0\0\0\0\0\0\0\0",
+                     pad=None, padmode=PAD_PKCS5)
+    enc_url = base64.b64decode(url.strip())
+    dec_url = des_cipher.decrypt(enc_url, padmode=PAD_PKCS5).decode('utf-8')
+    dec_url = dec_url.replace("_96.mp4", "_320.mp4")
+    return dec_url
+async def get_plays(pid : str):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'DNT': '1',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    }
+
+    async with aiohttp.ClientSession() as sn:
+        global song_url
+        async with sn.get(song_url + pid, headers=headers, timeout=10) as response:
+            try:
+                store = json.loads(await response.text())
+                encrypted_url = store[pid]['encrypted_media_url']
+                temp =  decrypt_url(encrypted_url)
+                bot.links.append(temp)
+                return temp
+            except:
+                pass
+
+class MusicPlayer(discord.ui.View):
+    def __init__(self, ctx: discord.ext.commands.Context, songname: str, num: int = 0):
+        super().__init__(timeout=300)
+        self.ctx = ctx
+        self.num = num
+        self.songname = songname
+        play_button = discord.ui.Button(label="Play", style=discord.ButtonStyle.green)
+        next_button = discord.ui.Button(label="⏭️", style=discord.ButtonStyle.secondary)
+        prev_button = discord.ui.Button(label="⏮️", style=discord.ButtonStyle.secondary)
+        stop_button = discord.ui.Button(label="Stop", style=discord.ButtonStyle.red)
+        play_button.callback = self.play
+        next_button.callback = self.next
+        prev_button.callback = self.prev
+        stop_button.callback = self.stop
+        self.add_item(play_button)
+        self.add_item(next_button)
+        self.add_item(prev_button)
+        self.add_item(stop_button)
+
+    async def play(self, interaction: discord.Interaction):
+        if not interaction.user.voice:
+            await interaction.response.send_message("You are not in a voice channel")
+            return
+        new_embed = discord.Embed(description=f"Playing {bot.links[self.num]}", title=self.songname, color=0x00ff00)
+        await bot.song_msg.edit(embed=new_embed)
+
+        if bot.vc.is_playing():
+            bot.vc.stop()
+
+        bot.vc.play(discord.FFmpegPCMAudio(bot.links[self.num]))
+        await interaction.response.defer()
+
+    async def next(self, interaction: discord.Interaction):
+        self.num += 1
+        if self.num >= len(bot.links) or self.num < 0:
+            await interaction.response.send_message("No more songs")
+            self.num -=1
+            return
+        await self.play(interaction)
+
+    async def prev(self, interaction: discord.Interaction):
+        self.num -= 1
+        if self.num >= len(bot.links) or self.num < 0:
+            await interaction.response.send_message("No more songs")
+            self.num +=1
+            return
+
+        await self.play(interaction)
+
+    async def stop(self, interaction: discord.Interaction):
+        if bot.vc.is_playing():
+            bot.vc.stop()
+            await interaction.response.send_message("Stopped")
+        else:
+            await interaction.response.send_message("No audio is currently playing")
+
+@bot.command(aliases = ["search", "s"])
+async def search_song(ctx : discord.ext.commands.Context, *song : str):
+    start = time.time()
+    if bot.vc and bot.vc.is_playing():
+        await ctx.send("Already connected to a voice channel")
+        return
+    if not ctx.author.voice:
+        await ctx.send("You are not in a voice channel")
+        return
+    embed = discord.Embed(description="Searching", title=" ".join(song), color=0x00ff00)
+    bot.links = []
+    bot.song_msg = await ctx.send(embed=embed)
+    bot.vc = await ctx.author.voice.channel.connect()
+    links = await get_links(" ".join(song))
+    await asyncio.gather(*(get_plays(link) for link in links))
+    new_embed = discord.Embed(description=f"Results : {bot.links[0]}", title=" ".join(song), color=0x00ff00)
+    await bot.song_msg.edit(embed = new_embed, view = MusicPlayer(ctx,' '.join(song),0))
+
+@bot.command(aliases = ["stop"])
+async def leave(ctx : discord.ext.commands.Context):
+    if not ctx.voice_client:
+        await ctx.send("you aint in the party")
+        return
+    if not ctx.author.voice.channel == ctx.voice_client.channel:
+        await ctx.send("not playing in your vc")
+        return
+    await ctx.voice_client.disconnect()
+
+@bot.command(aliases = ["deposit", "dep"])
+async def bank_add(ctx, amount : int | str = 100):
+    user : User= session.query(User).filter_by(id=ctx.author.id).first()
+    if amount == "all":
+        amount = user.economy.cash
+    amount = max(-amount, amount)
+    cash = user.economy
+    bank = user.bank
+    if amount > cash.cash:
+        await ctx.send("You dont have that much money")
+        return
+    bank.cash += amount
+    cash.cash -= amount
+    session.commit()
+    embed = discord.Embed(color = 0x00ff00, description=f"Added {amount} to your bank")
+    embed.add_field(name = "Bank", value = f"{bank.cash-amount} + {amount} = {bank.cash}")
+    embed.add_field(name = "Cash", value = f"{cash.cash+amount} - {amount} = {cash.cash}")
+    embed.set_author(name = ctx.author.name, icon_url = ctx.author.avatar.url if ctx.author.avatar else None)
+    await ctx.send(embed = embed)
+
+@bot.command(aliases = ["with"])
+async def withdraw(ctx, amount : int | str = 100):
+    user : User= session.query(User).filter_by(id=ctx.author.id).first()
+    if amount == "all":
+        amount = user.bank.cash
+    amount = max(-amount, amount)
+    user : User= session.query(User).filter_by(id=ctx.author.id).first()
+    cash = user.economy
+    bank = user.bank
+    if amount > bank.cash:
+        await ctx.send("You dont have that much money in the bank")
+        return
+    bank.cash -= amount
+    cash.cash += amount
+    session.commit()
+    embed = discord.Embed(color = 0x00ff00, description=f"Withdrew {amount} from your bank")
+    embed.add_field(name = "Bank", value = f"{bank.cash+amount} - {amount} = {bank.cash}")
+    embed.add_field(name = "Cash", value = f"{cash.cash-amount} + {amount} = {cash.cash}")
+    embed.set_author(name = ctx.author.name, icon_url = ctx.author.avatar.url if ctx.author.avatar else None)
+    await ctx.send(embed = embed)
+
+@bot.command()
+async def level(ctx, user : discord.Member | None = None):
+    if not user:
+        user = ctx.author
+    level = session.query(Level).filter_by(id = user.id).first()
+    embed = discord.Embed(title = "Level", description=f"You are at level {level.level}", color = 0xC3B1E1)
+    embed.add_field(name = "Messages" , value = f"{int((level.level)**1.5) * 20 - level.current} / {int(level.level**1.5) * 20 }")
+    embed.add_field(name = "Next reward", value=f"{(level.level+1)**2 * 500}")
+    embed.set_author(name = user.name, icon_url=user.avatar.url if user.avatar else None)
+    await ctx.send(embed = embed)
+
+@bot.command(aliases = ['rank'])
+async def levellb(ctx):
+    rankings = session.query(User).join(Level).order_by(-Level.level+0.00001*Level.current).all()
+    user1 = session.query(User).filter_by(id = ctx.author.id).first()
+    msg = []
+
+    rank = 1
+    for user in rankings:
+        if len(msg)>=10:
+            break
+        msg.append(f"{rank}. <@{user.id}> - `Level {user.level.level}`")
+    user_rank = rankings.index(user1)
+    if user_rank >= 10:
+        msg.extend(['.','.',f"{user_rank +1 }. {ctx.author.mention} - `Level {user1.level.level}`"])
+    embed = discord.Embed(title = "Messages leaderboard", description='\n'.join(msg), color = 0xC3B1E1)
+    await ctx.send(embed = embed)
+
+@bot.command()
+async def job(ctx, user : discord.Member | None = None):
+    if not user:
+        user = ctx.author
+    existing = session.query(User).filter_by(id = user.id).first()
+    embed = discord.Embed(title = "Job status", description=f"{user.mention} works as a {existing.job.name}", color = 0x00ff00)
+    embed.add_field(name="Salary", value = f"{existing.job.salary}")
+    embed.set_author(name = user.name, icon_url=user.avatar.url if user.avatar else None)
+    await ctx.send(embed = embed)
+
+@bot.command(aliases = ["jobs"])
+async def joblist(ctx):
+    embed = discord.Embed(title = "Available jobs", color = 0x00ff00,description="These are the jobs you can take up")
+    for job, info in sorted(bot.jobs.items(), key = lambda x: x[1].get("salary")):
+        embed.add_field(name=job.capitalize(), value=f"Salary : {info.get("salary")}\nLevel required : {info.get("min")}")
+    await ctx.send(embed = embed)
+
+@bot.command()
+async def apply(ctx, name : str = ""):
+    name = name.lower()
+    if name not in bot.jobs:
+        await ctx.send("Enter a valid job to apply for, check using $joblist")
+        return
+    user = session.query(User).filter_by(id = ctx.author.id).first()
+    level = user.level.level
+    if bot.jobs[name]["min"] > level:
+        await ctx.send("You arent high enough of a level to join yet")
+        return
+    user.job.name = name
+    user.job.salary = bot.jobs[name]["salary"]
+    session.commit()
+    embed = discord.Embed(color = 0x00ff00, title = "Applied successfully", description=f"{ctx.author.mention} now works as a {user.job.name}")
+    embed.add_field(name = "Salary", value = f"{user.job.salary} coins")
+    await ctx.send(embed = embed)
+
 
 if __name__ == '__main__':
     bot.run(os.getenv("TOKEN"))
