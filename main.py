@@ -19,13 +19,14 @@ from urllib.request import Request, urlopen
 import os
 from dotenv import load_dotenv
 
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, CheckConstraint
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, CheckConstraint, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker , relationship, Query
 
 import discord.ext
 
 Base = declarative_base()
+
 
 class Level(Base):
     __tablename__ = "level"
@@ -59,16 +60,23 @@ class Economy(Base):
     def cash(self, value):
         self._cash = max(value, 0)
 
+class Bestrace(Base):
+    __tablename__ = "bestrace"
+    id = Column(Integer, ForeignKey("user.id"), primary_key=True)
+    time = Column(Float, default= 10)
+    user = relationship("User", back_populates="bestrace", uselist=False)
+
 class User(Base):
     __tablename__ = "user"
     id = Column(Integer, primary_key=True)
     name = Column(String)
     avatar = Column(String)
-    roles = relationship("UserRole", back_populates="user")
-    economy = relationship("Economy", back_populates="user", uselist=False)
-    bank = relationship("Bank", back_populates="user", uselist=False)
-    level = relationship("Level", back_populates="user", uselist=False)
-    job = relationship("Job", back_populates="user", uselist=False)
+    roles = relationship("UserRole", back_populates="user" , cascade="all, delete-orphan")
+    economy = relationship("Economy", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    bank = relationship("Bank", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    level = relationship("Level", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    job = relationship("Job", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    bestrace = relationship("Bestrace", back_populates="user", uselist=False,cascade="all, delete-orphan" )
 
 class UserRole(Base):
     __tablename__ = "userrole"
@@ -134,13 +142,13 @@ class Diddler(commands.Bot):
 
 
     def deleted(self, message : discord.Message) -> None:
-        embed = discord.Embed(description=f"**Message**: {message.content}", color=0x00ff00)
+        embed = discord.Embed(description=f"**Message**: {message.content}", color=0xC3B1E1)
         embed.set_author(name=f"{message.author}", icon_url=message.author.avatar.url if message.author.avatar else None)
         embed.set_footer(text=f"Deleted in #{message.channel}")
         self.logs.append(embed)
 
     def edited_message(self, before : discord.Message, after: discord.Message) -> None:
-        embed = discord.Embed(description=f"**Before**: {before.content}\n **After**: {after.content}", color=0x00ff00)
+        embed = discord.Embed(description=f"**Before**: {before.content}\n **After**: {after.content}", color=0xC3B1E1)
         embed.set_author(name=f"{before.author}", icon_url=before.author.avatar.url if before.author.avatar else None)
         embed.set_footer(text=f"Edited in #{before.channel}")
         self.changelogs.append(embed)
@@ -256,7 +264,7 @@ async def send_msg():
         button = discord.ui.Button(emoji=stores[color], style=discord.ButtonStyle.secondary, custom_id=f"{color}")
         button.callback = add_role
         view.add_item(button)
-    embed = discord.Embed(title="Select a color", color=0x00ff00)
+    embed = discord.Embed(title="Select a color", color=0xC3B1E1)
     embed.add_field(name="", value=f"{', '.join([role.mention for role in bot.color_roles.values()])}")
     embed.set_author(name=f"{bot.user.name}", icon_url=bot.user.avatar.url)
     rc = get(bot.guilds[0].channels, id = 1294954582941896746)
@@ -281,7 +289,7 @@ class Raward(discord.ui.View):
         self.timeout = None
         old_cash = session.query(Economy).filter_by(id = interaction.user.id).first()
         rand = random.randint(10,1000)
-        embed = discord.Embed(title = "Reward added", color = 0x00ff00, description=f"Clamined by {interaction.user.mention}")
+        embed = discord.Embed(title = "Reward added", color = 0xC3B1E1, description=f"Clamined by {interaction.user.mention}")
         embed.add_field(name = "Balance", value = f"{old_cash.cash} + {rand}")
         old_cash.cash += rand
         session.commit()
@@ -289,7 +297,7 @@ class Raward(discord.ui.View):
 
 async def send_random():
     while True:
-        embed = discord.Embed(title = "Click me for a reward", color = 0x00ff00)
+        embed = discord.Embed(title = "Click me for a reward", color = 0xC3B1E1)
         bot.lastmsg = await bot.get_channel(1287525272748560499).send(embed = embed, view = Raward())
         to_sleep = random.randint(30, 60)
         await asyncio.sleep(to_sleep*60)
@@ -303,7 +311,7 @@ async def apply_interest(guild):
         asyncio.create_task(chann.edit(name = f"Interest rate: {rate*100:.2f}%"))
         for user in guild.members:
             old_user = session.query(User).filter_by(id = user.id).first()
-            old_user.bank.cash += min(10_000 * old_user.level.level ,old_user.bank.cash * rate)
+            old_user.bank.cash += min(3_000 * old_user.level.level ,old_user.bank.cash * rate)
             old_user.bank.cash = math.ceil(old_user.bank.cash)
             old_user.economy.cash += old_user.job.salary
         session.commit()
@@ -330,6 +338,7 @@ async def on_ready():
                 old_bank = existing_user.bank
                 old_level = existing_user.level
                 old_job = existing_user.job
+                old_best = existing_user.bestrace
                 if not old_bank:
                     add_bank = Bank(id = existing_user.id, cash = 0)
                     session.add(add_bank)
@@ -342,6 +351,9 @@ async def on_ready():
                 if not old_job:
                     add_job = Job(id = existing_user.id, name = "clown", salary = bot.jobs["clown"]["salary"])
                     session.add(add_job)
+                if not old_best:
+                    add_best = Bestrace(id = existing_user.id, time = 10.0)
+                    session.add(add_best)
                 existing_user.name = member.name
                 existing_user.avatar = member.avatar.url if member.avatar else None
             else:
@@ -377,6 +389,8 @@ async def on_message(message):
         if message.author.id == bot.user.id:
             return
         user : User = session.query(User).filter_by(id = message.author.id).first()
+        if not user.level:
+            print(user.name)
         user.level.current -= 1
         if user.level.current <= 0:
             user.level.level+=1
@@ -415,7 +429,6 @@ async def on_member_update(before, after):
     async def modify_user():
         id = before.id
         existing = session.query(User).filter_by(id=id).first()
-
         if existing:
             if before.nick != after.nick:
                 existing.name = after.nick
@@ -467,10 +480,12 @@ async def on_member_join(member : discord.Member):
             money = Economy(id=existing.id, cash=0)
             bank = Bank(id=existing.id, cash=0)
             level = Level(id = existing.id, level = 1, current = 20)
+            best = Bestrace(id = existing.id, time = 10.0)
             session.add(existing)
             session.add(bank)
             session.add(money)
             session.add(level)
+            session.add(best)
             session.commit()
         async def ad_role(role):
             try:
@@ -503,7 +518,7 @@ async def on_voice_state_update(member, before, after):
 @bot.command(aliases=[])
 async def snipe(ctx, nums = 1):
     if nums>len(bot.logs):
-        await ctx.send(embed = discord.Embed(description="Not enough messages to snipe", color = 0x00ff00))
+        await ctx.send(embed = discord.Embed(description="Not enough messages to snipe", color = 0xC3B1E1))
         return
     await ctx.send(embed = bot.snipe(nums))
 
@@ -527,7 +542,7 @@ async def spank(ctx, to_spank : discord.Member | None | discord.User= None):
     from_spank = ctx.author
     if not to_spank:
         to_spank = await bot.fetch_user(470142142287970305)
-    embed = discord.Embed(description=f"{from_spank.mention} oiled up and spanked {to_spank.mention}", color=0x00ff00)
+    embed = discord.Embed(description=f"{from_spank.mention} oiled up and spanked {to_spank.mention}", color=0xC3B1E1)
     embed.set_image(url="https://media1.tenor.com/m/V8vUcWo4dLIAAAAC/spank-peach.gif")
     embed.set_author(name=f"{from_spank}", icon_url=from_spank.avatar.url if from_spank.avatar else None)
     await ctx.send(embed=embed)
@@ -537,7 +552,7 @@ async def kiss(ctx , to_kiss = None):
     from_kiss = ctx.author
     if not to_kiss:
         to_kiss = await bot.fetch_user(1247271643009777704)
-    embed = discord.Embed(color=0x00ff00, description = f"{from_kiss.mention} ***smooches*** {to_kiss}")
+    embed = discord.Embed(color=0xC3B1E1, description = f"{from_kiss.mention} ***smooches*** {to_kiss}")
     embed.set_image(url="https://media1.tenor.com/m/o_5RQarGvJ0AAAAC/kiss.gif")
     embed.set_author(name=f"{from_kiss}", icon_url=from_kiss.avatar.url if from_kiss.avatar else None)
     await ctx.send(embed=embed)
@@ -552,7 +567,7 @@ async def mute(ctx, member: discord.Member):
         muted_role = bot.muted_role
         await member.add_roles(muted_role, reason=f"Muted by {ctx.author}")
     asyncio.create_task(add_role())
-    embed = discord.Embed(description=f"{member.mention} has been muted by {ctx.author.mention}", color=0x00ff00)
+    embed = discord.Embed(description=f"{member.mention} has been muted by {ctx.author.mention}", color=0xC3B1E1)
     await ctx.send(embed=embed)
 
 @bot.command()
@@ -565,7 +580,7 @@ async def unmute(ctx, member: discord.Member):
         muted_role = bot.muted_role
         await member.remove_roles(muted_role, reason=f"Unmuted by {ctx.author}")
     asyncio.create_task(add_role())
-    embed = discord.Embed(description=f"{member.mention} has been unmuted by {ctx.author.mention}", color=0x00ff00)
+    embed = discord.Embed(description=f"{member.mention} has been unmuted by {ctx.author.mention}", color=0xC3B1E1)
     await ctx.send(embed=embed)
 
 @bot.command()
@@ -575,7 +590,7 @@ async def kick(ctx, to_kick : discord.Member):
         await ctx.send("no")
         return
     async def send_msg():
-        embed = discord.Embed(description=f"{to_kick.mention} has been kicked by {ctx.author.mention}", color=0x00ff00)
+        embed = discord.Embed(description=f"{to_kick.mention} has been kicked by {ctx.author.mention}", color=0xC3B1E1)
         await ctx.send(embed=embed)
     asyncio.gather( to_kick.kick() , send_msg())
 
@@ -586,7 +601,7 @@ async def ban(ctx, to_ban : discord.Member, reason : str | None = None):
         await ctx.send("no")
         return
     async def send_msg():
-        embed = discord.Embed(description=f"{to_ban.mention} has been banned by {ctx.author.mention}", color=0x00ff00)
+        embed = discord.Embed(description=f"{to_ban.mention} has been banned by {ctx.author.mention}", color=0xC3B1E1)
         await ctx.send(embed=embed)
 
     asyncio.gather(to_ban.ban(reason=reason, delete_message_days=0) , send_msg())
@@ -599,7 +614,7 @@ async def unban(ctx, to_unban : str | None = None):
         return
     member =  await bot.fetch_user(to_unban)
     async def send_msg():
-        embed = discord.Embed(description=f"{member.mention} has been unbanned by {ctx.author.mention}", color=0x00ff00)
+        embed = discord.Embed(description=f"{member.mention} has been unbanned by {ctx.author.mention}", color=0xC3B1E1)
         await ctx.send(embed=embed)
     asyncio.gather(ctx.guild.unban(member) , send_msg())
 
@@ -610,7 +625,7 @@ async def invite(ctx):
 
 @bot.command()
 async def poll(ctx, *, question):
-    embed = discord.Embed(title="Poll", description=question, color=0x00ff00)
+    embed = discord.Embed(title="Poll", description=question, color=0xC3B1E1)
     embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     embed.set_footer(text=f"Poll created by {ctx.author.name}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     poll_message = await ctx.send(embed=embed)
@@ -623,7 +638,7 @@ async def rand(ctx,*, args : str=""):
         await ctx.send("Your mom a hoe")
         return
     temp = args.split(",")
-    embed = discord.Embed(description=f"**I** chose **{random.choice(temp)}**", color=0x00ff00)
+    embed = discord.Embed(description=f"**I** chose **{random.choice(temp)}**", color=0xC3B1E1)
     embed.set_author(name=f"{ctx.author}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     await ctx.send(embed=embed)
 
@@ -632,12 +647,12 @@ async def pp(ctx, user : discord.Member = None):
     if not user:
         user = ctx.author
     if "woman" in {role.name.lower() for role in ctx.guild.get_member(user.id).roles}:
-        embed = discord.Embed(description=f"{user.mention} has no pp", color=0x00ff00)
+        embed = discord.Embed(description=f"{user.mention} has no pp", color=0xC3B1E1)
         embed.set_author(name=f"{user}", icon_url=user.avatar.url if user.avatar else None)
         await ctx.send(embed=embed)
         return
     ppsize = f"8{"="*random.randint(2,8)}D" if user.id != 909101433083813958 else f"8{'='*random.randint(8,14)}D"
-    embed = discord.Embed(description=f"{user.mention} has a {ppsize} pp", color=0x00ff00)
+    embed = discord.Embed(description=f"{user.mention} has a {ppsize} pp", color=0xC3B1E1)
     embed.set_author(name=f"{user}", icon_url=user.avatar.url if user.avatar else None)
     await ctx.send(embed=embed)
 
@@ -649,7 +664,7 @@ async def gayrate(ctx, user : discord.Member | None = None):
     gayrate = max(0, min(100, gayrate))
     if random.randint(0,1000) == 69:
         gayrate = 1000
-    embed = discord.Embed(description=f"{user.mention} is {gayrate}% gay", color=0x00ff00)
+    embed = discord.Embed(description=f"{user.mention} is {gayrate}% gay", color=0xC3B1E1)
     embed.set_author(name=f"{user}", icon_url=user.avatar.url if user.avatar else None)
     await ctx.send(embed=embed)
 
@@ -657,7 +672,7 @@ async def gayrate(ctx, user : discord.Member | None = None):
 async def touch(ctx, user : discord.Member | None = None):
     if not user:
         user = ctx.author
-    embed = discord.Embed(description=f"{ctx.author.mention} touched {user.mention}", color=0x00ff00)
+    embed = discord.Embed(description=f"{ctx.author.mention} touched {user.mention}", color=0xC3B1E1)
     embed.set_image(url="https://media.discordapp.net/attachments/1125755890704863312/1223572603046985789/makesweet-x0u4zi.gif?ex=66f530c9&is=66f3df49&hm=9c877be4ca80702f0be44890c4fbf88824d1a8ec964de276f6889e5aadf13e2e&")
     embed.set_author(name=f"{ctx.author}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     await ctx.send(embed=embed)
@@ -668,7 +683,7 @@ async def kickme(ctx):
     inv = os.environ.get("INVITE")
     await ctx.author.send(f"yoo why you leave the party?? come back!\n{inv}")
     async def he_left():
-        embed = discord.Embed(description=f"{ctx.author.mention} killed themselves", color=0x00ff00)
+        embed = discord.Embed(description=f"{ctx.author.mention} killed themselves", color=0xC3B1E1)
         embed.set_author(name=f"{ctx.author}", icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
         await ctx.send(embed=embed)
     asyncio.gather(ctx.author.kick(reason="He asked for it."),he_left())
@@ -678,7 +693,7 @@ async def kickme(ctx):
 async def roulette(ctx, user : discord.Member | None = None):
     if not user:
         user = ctx.author
-    embed = discord.Embed(color=0x00ff00)
+    embed = discord.Embed(color=0xC3B1E1)
     if random.randint(0,6) == 1:
         embed.description = f"{user.mention} died"
         embed.set_image(url = "https://images-ext-1.discordapp.net/external/NbnFjJTry-slSIXdkS0APwB-nVTeDz_yr0wdPCwvNBw/https/media.tenor.com/3ni-e-SSFYsAAAPo/outlast-game.mp4")
@@ -701,7 +716,7 @@ async def watch(ctx, *, movie):
 
             embeds = []
             for i, result in enumerate(results):
-                embed = discord.Embed(title=result['title'], url=result['movie_url'], color=0x00ff00)
+                embed = discord.Embed(title=result['title'], url=result['movie_url'], color=0xC3B1E1)
                 embed.set_image(url=result['image_url'])
                 embed.set_footer(text=f"Result {i+1}/{len(results)}")
                 embeds.append(embed)
@@ -742,7 +757,7 @@ async def watch(ctx, *, movie):
 async def boobs(ctx, user : discord.Member = None):
     if not user:
         user = ctx.author
-    embed = discord.Embed(description=f"{user.mention}'s chesticles",color=0x00ff00)
+    embed = discord.Embed(description=f"{user.mention}'s chesticles",color=0xC3B1E1)
     embed.set_author(name=f"{user}", icon_url=user.avatar.url if user.avatar else None)
     embed.set_image(url='https://media1.tenor.com/m/wQnHMN5pJXAAAAAd/mynameisgus-gusfring.gif')
     await ctx.send(embed=embed)
@@ -770,7 +785,7 @@ async def userpurge(ctx : discord.ext.commands.Context,member : discord.Member, 
 async def pfp(ctx, member:discord.Member=None):
     if not member:
         member = ctx.author
-    embed = discord.Embed(color=0x00ff00, description = f"{member.mention}'s avatar was searched by {ctx.author.mention}")
+    embed = discord.Embed(color=0xC3B1E1, description = f"{member.mention}'s avatar was searched by {ctx.author.mention}")
     embed.set_image(url = member.avatar.url)
     embed.set_author(name=member,icon_url = member.avatar.url)
     await ctx.send(embed = embed)
@@ -780,11 +795,11 @@ class Timer:
         self.ctx = ctx
         self.time = time
     async def start_timer(self):
-        await self.ctx.send(embed = discord.Embed(description = f"Timer started for {self.time} seconds by {self.ctx.author.mention}", color = 0x00ff00))
+        await self.ctx.send(embed = discord.Embed(description = f"Timer started for {self.time} seconds by {self.ctx.author.mention}", color = 0xC3B1E1))
         self.task = asyncio.create_task(self.countdown())
     async def countdown(self):
         await asyncio.sleep(self.time)
-        await self.ctx.send(f"{self.ctx.author.mention}", embed = discord.Embed(description = f"Timer ended by {self.ctx.author.mention}", color = 0x00ff00))
+        await self.ctx.send(f"{self.ctx.author.mention}", embed = discord.Embed(description = f"Timer ended by {self.ctx.author.mention}", color = 0xC3B1E1))
 
 @bot.command()
 async def timer(ctx, time):
@@ -890,7 +905,7 @@ class Game(discord.ui.Modal):
                 session.add(old_money)
             old_money.cash += wins
             session.commit()
-            await temp.edit(embed = discord.Embed(description=f'{msg[-11:-6]}\n{msg[-6:]}\nYou win, the word was ||**{to_check}**||, in **{7-attempts} tries**\nYou won {wins} coins!', color = 0x00ff00), view = discord.ui.View())
+            await temp.edit(embed = discord.Embed(description=f'{msg[-11:-6]}\n{msg[-6:]}\nYou win, the word was ||**{to_check}**||, in **{7-attempts} tries**\nYou won {wins} coins!', color = 0xC3B1E1), view = discord.ui.View())
             await interaction.response.defer()
             if self.ctx.author.id not in bot.playing or bot.playing[self.ctx.author.id] != self.ctx.message.id:
                 return
@@ -904,7 +919,7 @@ class Game(discord.ui.Modal):
                 session.add(old_money)
             old_money.cash += wins
             session.commit()
-            await temp.edit(embed = discord.Embed(description=f'Last attempt : {msg[-11:-6]}\n{msg[-6:]}\nGame over, the word was ||**{to_check}**||\nYou won {wins} coins!', color = 0x00ff00), view = discord.ui.View())
+            await temp.edit(embed = discord.Embed(description=f'Last attempt : {msg[-11:-6]}\n{msg[-6:]}\nGame over, the word was ||**{to_check}**||\nYou won {wins} coins!', color = 0xC3B1E1), view = discord.ui.View())
             await interaction.response.defer()
             if self.ctx.author.id not in bot.playing or bot.playing[self.ctx.author.id] != self.ctx.message.id:
                 return
@@ -916,7 +931,7 @@ class Game(discord.ui.Modal):
         button = discord.ui.Button(label = "Next Try", style=discord.ButtonStyle.green)
         button.callback = lambda interaction : interaction.response.send_modal(Game(self.ctx))
         view.add_item(button)
-        embed = discord.Embed(description=msg, title="Wordle", color=0x00ff00)
+        embed = discord.Embed(description=msg, title="Wordle", color=0xC3B1E1)
         embed.set_author(name=self.ctx.author, icon_url=self.ctx.author.avatar.url if self.ctx.author.avatar else None)
         embed.set_footer(text=f"{attempts} tries remaining")
         await temp.edit(embed = embed, view = view)
@@ -956,7 +971,7 @@ async def wordle(ctx : discord.ext.commands.Context):
         await ctx.send(f"You are already in a game {ctx.author.mention}, either finish that, or wait 2 minutes")
         return
     wordle = Wrd(ctx)
-    embed = discord.Embed(description="Start the game", title="Wordle", color=0x00ff00)
+    embed = discord.Embed(description="Start the game", title="Wordle", color=0xC3B1E1)
     embed.set_author(name=ctx.author, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     embed.set_footer(text=f"6 tries remaining")
     bot.playing[ctx.author.id] = ctx.message.id
@@ -974,7 +989,7 @@ async def money(ctx, dude : discord.Member | None = None):
     if not money:
         money = Economy(id = id, cash=0)
         session.add(money)
-    embed = discord.Embed(color=0x00ff00, title="Balance")
+    embed = discord.Embed(color=0xC3B1E1, title="Balance")
     embed.add_field(name="Cash", value=f"{money.cash}")
     embed.add_field(name="Bank", value=f"{bank.cash}")
     embed.set_author(name=dude.name, icon_url=dude.avatar.url if dude.avatar else None)
@@ -996,7 +1011,7 @@ async def lb(ctx):
         lbs.extend(['.']*2)
         lbs.append(f'{own+1}. {ctx.author.mention}  -  `{owncash.cash}`')
 
-    embed = discord.Embed(title = "Leaderboard", color = 0x00ff00, description='\n'.join(lbs))
+    embed = discord.Embed(title = "Leaderboard", color = 0xC3B1E1, description='\n'.join(lbs))
     embed.set_author(name=  ctx.author.name, icon_url= ctx.author.avatar.url if ctx.author.avatar else None)
     embed.set_footer(text="Earn more coins by playing $wordle")
     await ctx.send(embed = embed)
@@ -1027,7 +1042,7 @@ async def give(ctx, to : discord.Member | None = None, amount : int = 0):
     fr.cash-=amount
     ts.cash+=amount
     session.commit()
-    await ctx.send(embed = discord.Embed(color = 0x00ff00, description=f"Successfully sent {amount} from {ctx.author.mention} to {to.mention}"))
+    await ctx.send(embed = discord.Embed(color = 0xC3B1E1, description=f"Successfully sent {amount} from {ctx.author.mention} to {to.mention}"))
 
 @bot.command()
 async def beg(ctx):
@@ -1119,7 +1134,7 @@ class Bj(discord.ui.View):
         embed = discord.Embed(
             title="Blackjack",
             description=f"Your hand: {user_hand}\nDealer's cards: {dealer_hand}",
-            color=0x00ff00
+            color=0xC3B1E1
         )
         embed.set_author(name=self.ctx.author.name, icon_url=self.ctx.author.avatar.url if self.ctx.author.avatar else None)
         embed.set_footer(text=f"Bet: {amount}")
@@ -1200,7 +1215,7 @@ class Bj(discord.ui.View):
         embed = discord.Embed(
             title="Blackjack",
             description=f"Your hand: {user_hand}\nDealer's cards: {dealer_hand}",
-            color=0x00ff00
+            color=0xC3B1E1
         )
         embed.set_author(name=self.ctx.author.name, icon_url=self.ctx.author.avatar.url if self.ctx.author.avatar else None)
         embed.set_footer(text=f"Bet: {amount}")
@@ -1210,7 +1225,7 @@ class Bj(discord.ui.View):
         if sm > 21:
             embed.title = "Dealer Busts! You Win!"
             embed.description += f'\nBalance: {old_bal.cash} + {amount}'
-            embed.color = 0x00ff00
+            embed.color = 0xC3B1E1
             old_bal.cash += amount
         elif sm > user_total:
             embed.title = "Dealer Wins!"
@@ -1224,7 +1239,7 @@ class Bj(discord.ui.View):
         else:
             embed.title = "You Win!"
             embed.description += f'\nBalance: {old_bal.cash} + {amount}'
-            embed.color = 0x00ff00
+            embed.color = 0xC3B1E1
             old_bal.cash += amount
 
         session.commit()
@@ -1261,7 +1276,7 @@ async def bj(ctx: discord.ext.commands.Context, amount: int | str= 100):
     embed = discord.Embed(
         title='Blackjack',
         description=f"Your hand: {user_hand}\nDealer's cards: {dealer_hand}",
-        color=0x00ff00
+        color=0xC3B1E1
     )
     embed.set_author(name=ctx.author.name, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     embed.set_footer(text=f"Bet: {amount}")
@@ -1310,20 +1325,21 @@ class Challenge(discord.ui.Modal):
             return
         word = self.text.value
         tm = time.time() - self.store['start']
-        embed = discord.Embed(title = "Typing race", color = 0x00ff00)
+        embed = discord.Embed(title = "Typing race", color = 0xC3B1E1)
         embed.set_author(name = self.ctx.author.name, icon_url=self.ctx.author.avatar.url if self.ctx.author.avatar else None)
-        old_bal = session.query(Economy).filter_by(id = self.ctx.author.id).first()
+        user = session.query(User).filter_by(id = self.ctx.author.id).first()
         if word == self.store['para']:
+            user.bestrace.time = min(user.bestrace.time, tm)
             new = 100*math.ceil(10 - tm)
             embed.description = f"{word}\nTyped in {tm} seconds"
-            embed.add_field(name="New Balance", value=f"{old_bal.cash} + {new}")
-            old_bal.cash += new
+            embed.add_field(name="New Balance", value=f"{user.economy.cash} + {new}")
+            user.economy.cash += new
             await self.store['message'].edit(embed = embed, view = discord.ui.View())
         else:
             embed.color = 0xff0000
             embed.description = f"You typed - {word}\nActual words - {self.store['para']}\n Typed in {time.time() - self.store['start']} seconds"
-            embed.add_field(name="New Balance", value=f"{old_bal.cash} - 100")
-            old_bal.cash -=100
+            embed.add_field(name="New Balance", value=f"{user.economy.cash} - 100")
+            user.economy.cash -=100
             await self.store['message'].edit(embed = embed, view = discord.ui.View())
         if self.ctx.author.id not in bot.playing or bot.playing[self.ctx.author.id] != self.ctx.message.id:
             return
@@ -1365,7 +1381,7 @@ async def race(ctx):
     if session.query(Economy).filter_by(id = ctx.author.id).first().cash <100:
         await ctx.send("You need at least 100 coins to race")
         return
-    embed = discord.Embed(title = "Typing race", color = 0x00ff00, description="Clcik the button to start")
+    embed = discord.Embed(title = "Typing race", color = 0xC3B1E1, description="Clcik the button to start")
     embed.set_author(name = ctx.author.name, icon_url=ctx.author.avatar.url if ctx.author.avatar else None)
     view = Race(ctx)
     bot.race[ctx.author.id] = {
@@ -1404,7 +1420,7 @@ async def height(ctx, user : discord.Member = None):
     lower = 1
     upper = 8 if "woman" not in {role.name.lower() for role in ctx.guild.get_member(user.id).roles} else 3
     msg = f"```     O     \n    \\|/   \n" + random.randint(lower,upper)*"     |\n" + "    / \\```"
-    embed = discord.Embed(description=msg, color=0x00ff00, title=f"{user.name}'s Height")
+    embed = discord.Embed(description=msg, color=0xC3B1E1, title=f"{user.name}'s Height")
     embed.set_author(name=f"{user}", icon_url=user.avatar.url if user.avatar else None)
     await ctx.send(embed=embed)
 
@@ -1481,7 +1497,7 @@ class MusicPlayer(discord.ui.View):
         if not interaction.user.voice:
             await interaction.response.send_message("You are not in a voice channel")
             return
-        new_embed = discord.Embed(description=f"Playing {bot.links[self.num]}", title=self.songname, color=0x00ff00)
+        new_embed = discord.Embed(description=f"Playing {bot.links[self.num]}", title=self.songname, color=0xC3B1E1)
         await bot.song_msg.edit(embed=new_embed)
 
         if bot.vc.is_playing():
@@ -1523,13 +1539,13 @@ async def search_song(ctx : discord.ext.commands.Context, *song : str):
     if not ctx.author.voice:
         await ctx.send("You are not in a voice channel")
         return
-    embed = discord.Embed(description="Searching", title=" ".join(song), color=0x00ff00)
+    embed = discord.Embed(description="Searching", title=" ".join(song), color=0xC3B1E1)
     bot.links = []
     bot.song_msg = await ctx.send(embed=embed)
     bot.vc = await ctx.author.voice.channel.connect()
     links = await get_links(" ".join(song))
     await asyncio.gather(*(get_plays(link) for link in links))
-    new_embed = discord.Embed(description=f"Results : {bot.links[0]}", title=" ".join(song), color=0x00ff00)
+    new_embed = discord.Embed(description=f"Results : {bot.links[0]}", title=" ".join(song), color=0xC3B1E1)
     await bot.song_msg.edit(embed = new_embed, view = MusicPlayer(ctx,' '.join(song),0))
 
 @bot.command(aliases = ["stop"])
@@ -1556,7 +1572,7 @@ async def bank_add(ctx, amount : int | str = 100):
     bank.cash += amount
     cash.cash -= amount
     session.commit()
-    embed = discord.Embed(color = 0x00ff00, description=f"Added {amount} to your bank")
+    embed = discord.Embed(color = 0xC3B1E1, description=f"Added {amount} to your bank")
     embed.add_field(name = "Bank", value = f"{bank.cash-amount} + {amount} = {bank.cash}")
     embed.add_field(name = "Cash", value = f"{cash.cash+amount} - {amount} = {cash.cash}")
     embed.set_author(name = ctx.author.name, icon_url = ctx.author.avatar.url if ctx.author.avatar else None)
@@ -1577,7 +1593,7 @@ async def withdraw(ctx, amount : int | str = 100):
     bank.cash -= amount
     cash.cash += amount
     session.commit()
-    embed = discord.Embed(color = 0x00ff00, description=f"Withdrew {amount} from your bank")
+    embed = discord.Embed(color = 0xC3B1E1, description=f"Withdrew {amount} from your bank")
     embed.add_field(name = "Bank", value = f"{bank.cash+amount} - {amount} = {bank.cash}")
     embed.add_field(name = "Cash", value = f"{cash.cash-amount} + {amount} = {cash.cash}")
     embed.set_author(name = ctx.author.name, icon_url = ctx.author.avatar.url if ctx.author.avatar else None)
@@ -1616,14 +1632,14 @@ async def job(ctx, user : discord.Member | None = None):
     if not user:
         user = ctx.author
     existing = session.query(User).filter_by(id = user.id).first()
-    embed = discord.Embed(title = "Job status", description=f"{user.mention} works as a {existing.job.name}", color = 0x00ff00)
+    embed = discord.Embed(title = "Job status", description=f"{user.mention} works as a {existing.job.name}", color = 0xC3B1E1)
     embed.add_field(name="Salary", value = f"{existing.job.salary}")
     embed.set_author(name = user.name, icon_url=user.avatar.url if user.avatar else None)
     await ctx.send(embed = embed)
 
 @bot.command(aliases = ["jobs"])
 async def joblist(ctx):
-    embed = discord.Embed(title = "Available jobs", color = 0x00ff00,description="These are the jobs you can take up")
+    embed = discord.Embed(title = "Available jobs", color = 0xC3B1E1,description="These are the jobs you can take up")
     for job, info in sorted(bot.jobs.items(), key = lambda x: x[1].get("salary")):
         embed.add_field(name=job.capitalize(), value=f"Salary : {info.get("salary")}\nLevel required : {info.get("min")}")
     await ctx.send(embed = embed)
@@ -1642,10 +1658,25 @@ async def apply(ctx, name : str = ""):
     user.job.name = name
     user.job.salary = bot.jobs[name]["salary"]
     session.commit()
-    embed = discord.Embed(color = 0x00ff00, title = "Applied successfully", description=f"{ctx.author.mention} now works as a {user.job.name}")
+    embed = discord.Embed(color = 0xC3B1E1, title = "Applied successfully", description=f"{ctx.author.mention} now works as a {user.job.name}")
     embed.add_field(name = "Salary", value = f"{user.job.salary} coins")
     await ctx.send(embed = embed)
 
+@bot.command(aliases = ["times" , "races"])
+async def timelb(ctx):
+    rankings = session.query(User).join(Bestrace).order_by(Bestrace.time).all()
+    user1 = session.query(User).filter_by(id = ctx.author.id).first()
+    msg = []
 
+    rank = 1
+    for user in rankings:
+        if len(msg)>=10:
+            break
+        msg.append(f"{rank}. <@{user.id}> - `{user.bestrace.time:.2f}`")
+    user_rank = rankings.index(user1)
+    if user_rank >= 10:
+        msg.extend(['.','.',f"{user_rank +1 }. {ctx.author.mention} - `{user1.bestrace.time:.2f}`"])
+    embed = discord.Embed(title = "Race Leaderboard", description='\n'.join(msg), color = 0xFDFD96)
+    await ctx.send(embed = embed)
 if __name__ == '__main__':
     bot.run(os.getenv("TOKEN"))
