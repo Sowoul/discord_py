@@ -1290,14 +1290,6 @@ async def bj(ctx: discord.ext.commands.Context, amount: int | str= 100):
         'dealer_cards': dealer_cards
     }
 
-@bot.command()
-async def sex(ctx : discord.Message):
-    view = discord.ui.View()
-    button = discord.ui.Button(label = "sex me", style = discord.ButtonStyle.secondary)
-    button.callback = lambda instance : instance.response.send_message(f"{instance.user.mention} sexed {ctx.author.mention}")
-    view.add_item(button)
-    await ctx.send("sex", view = view)
-
 class Challenge(discord.ui.Modal):
     def __init__(self,ctx):
         super().__init__( title="Race", timeout=10)
